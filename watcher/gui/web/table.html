@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>数据表格</title>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1e1e1e; color: #e0e0e0; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 13px; }
+  #header { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid #333; flex-wrap: wrap; }
+  #title { font-size: 16px; font-weight: bold; color: #ff9800; }
+  #meta { color: #888; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th { position: sticky; top: 0; background: #2d2d2d; color: #ff9800; text-align: left;
+             padding: 10px 12px; border-bottom: 2px solid #ff9800; font-weight: bold; z-index: 1; }
+  tbody td { padding: 9px 12px; border-bottom: 1px solid #2c2c2c; white-space: nowrap; }
+  tbody tr:nth-child(even) { background: #232323; }
+  tbody tr:hover { background: #333; }
+  tbody tr.clickable { cursor: pointer; }
+  .alert-toggle { cursor: pointer; font-size: 16px; user-select: none; }
+  .alert-toggle.on { opacity: 1; }
+  .alert-toggle.off { opacity: 0.4; }
+  .up { color: #ef5350; font-weight: bold; }
+  .down { color: #26a69a; font-weight: bold; }
+  .flat { color: #aaa; }
+  #empty { display: flex; align-items: center; justify-content: center; height: 60vh; color: #666; font-size: 15px; }
+</style>
+</head>
+<body>
+<div id="header">
+  <span id="title"></span>
+  <span id="meta"></span>
+</div>
+<div id="empty" style="display:none">暂无数据</div>
+<table id="tbl" style="display:none">
+  <thead><tr id="head-row"></tr></thead>
+  <tbody id="body"></tbody>
+</table>
+<script>
+new QWebChannel(qt.webChannelTransport, function(channel) {
+  window.pyBridge = channel.objects.bridge;
+});
+let columns = [];
+let rowKey = null;
+
+window.renderTable = function(payload) {
+  document.getElementById('title').textContent = payload.title || '';
+  document.getElementById('meta').textContent = payload.meta || '';
+  columns = payload.columns || [];
+  rowKey = payload.rowKey || null;
+  const rows = payload.rows || [];
+
+  const tbl = document.getElementById('tbl');
+  const empty = document.getElementById('empty');
+  tbl.style.display = rows.length ? 'table' : 'none';
+  empty.style.display = rows.length ? 'none' : 'flex';
+  if (!rows.length) return;
+
+  document.getElementById('head-row').innerHTML =
+    columns.map(c => `<th>${c.title}</th>`).join('');
+
+  const body = document.getElementById('body');
+  body.innerHTML = '';
+  rows.forEach(r => {
+    const tr = document.createElement('tr');
+    if (rowKey) {
+      tr.className = 'clickable';
+      tr.onclick = (e) => {
+        if (e.target.classList.contains('alert-toggle')) return;  // toggle 不触发行点击
+        if (window.pyBridge) window.pyBridge.onRowClicked(r[rowKey], r._name || r[rowKey]);
+      };
+    }
+    tr.innerHTML = columns.map(c => {
+      let v = r[c.key];
+      let cls = '';
+      if (c.type === 'toggle') {
+        const on = !!v;
+        const code = r[rowKey] || '';
+        return `<td><span class="alert-toggle ${on ? 'on' : 'off'}" `+
+               `onclick="event.stopPropagation(); if(window.pyBridge){window.pyBridge.toggleAlert('${code}');` +
+               `this.classList.toggle('on');this.classList.toggle('off');` +
+               `this.textContent=this.classList.contains('on')?'🔔':'🔕'}" `+
+               `title="${on ? '点击关闭提醒' : '点击开启提醒'}">${on ? '🔔' : '🔕'}</span></td>`;
+      } else if (c.type === 'pct') {
+        const n = Number(v);
+        cls = n > 0 ? 'up' : n < 0 ? 'down' : 'flat';
+        v = (n > 0 ? '+' : '') + (isNaN(n) ? '-' : n.toFixed(2)) + '%';
+      } else if (c.type === 'num') {
+        v = (v == null || v === '') ? '-' : Number(v).toFixed(c.digits != null ? c.digits : 3);
+      } else if (v == null || v === '') {
+        v = '-';
+      }
+      return `<td class="${cls}">${v}</td>`;
+    }).join('');
+    body.appendChild(tr);
+  });
+};
+</script>
+</body>
+</html>

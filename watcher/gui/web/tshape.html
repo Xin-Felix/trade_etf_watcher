@@ -1,0 +1,896 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>期权T型</title>
+<script src="qrc:/web/echarts.min.js"></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1e1e1e; color: #e0e0e0; font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+         font-size: 13px; display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+         font-variant-numeric: tabular-nums; }
+  #header { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid #333; }
+  #title { font-size: 15px; font-weight: bold; color: #ff9800; }
+  #meta { color: #888; font-size: 12px; }
+  .price-chip { padding: 3px 10px; border-radius: 4px; background: #252525; border: 1px solid #3a3a3a;
+                cursor: pointer; font-weight: bold; }
+  .btn { background: #3a3a3a; color: #fff; border: none; border-radius: 5px; padding: 4px 12px;
+         cursor: pointer; font-size: 12px; }
+  .btn:hover { background: #ff9800; color: #1a1a1a; }
+
+  /* 到期日 chips */
+  #expiry-bar { display: flex; gap: 8px; padding: 8px 14px; overflow-x: auto; border-bottom: 1px solid #333;
+                flex-shrink: 0; }
+  #expiry-bar::-webkit-scrollbar { height: 4px; }
+  #expiry-bar::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
+  .chip { padding: 5px 14px; border: 1px solid #3a3a3a; border-radius: 5px; color: #aaa; cursor: pointer;
+          white-space: nowrap; background: #252525; }
+  .chip:hover { border-color: #ff9800; color: #fff; }
+  .chip.active { border-color: #ff9800; color: #ff9800; font-weight: bold; background: #2d2519; }
+
+  /* 表头 */
+  #thead { display: grid; grid-template-columns: 1fr 84px 1fr; border-bottom: 2px solid #ff9800;
+           background: #252525; flex-shrink: 0; }
+  .side-head { padding: 6px 0 4px; min-width: 0; }
+  .side-title { font-weight: bold; font-size: 13px; margin: 0 10px 4px; }
+  .call-head .side-title { color: #ef5350; }
+  .put-head .side-title { color: #26a69a; text-align: right; }
+  .strike-head { display: flex; align-items: flex-end; justify-content: center; color: #888;
+                 font-size: 12px; padding-bottom: 4px; }
+  .hrow { display: flex; min-width: 0; }
+  .hcell { color: #888; font-size: 12px; padding: 0 10px; white-space: nowrap; overflow: hidden; }
+  .hcell.fixed { flex: 0 0 112px; }
+  .hcell.l { text-align: left; } .hcell.r { text-align: right; }
+
+  /* T 型主体 */
+  #twrap { flex: 1; overflow-y: auto; overflow-x: hidden; }
+  .srow { display: grid; grid-template-columns: 1fr 84px 1fr; border-bottom: 1px solid #2a2a2a; }
+  .srow:nth-child(even) { background: #222222; }
+  .side { display: flex; flex-direction: column; min-width: 0; }
+  .cblock { display: flex; cursor: pointer; flex: 1; min-width: 0; }
+  .cblock + .cblock { border-top: 1px dashed #333; }
+  .cblock:hover { background: #333; }
+  .colscroll { flex: 1 1 auto; overflow-x: auto; scroll-snap-type: x mandatory;
+               scrollbar-width: none; min-width: 0; }
+  .colscroll::-webkit-scrollbar { display: none; }
+  .cinner { display: flex; width: 300%; }
+  .page { flex: 0 0 calc(100% / 3); scroll-snap-align: start; display: grid;
+          grid-template-columns: 1fr 1fr; min-width: 0; }
+  .cell { padding: 5px 10px; display: flex; flex-direction: column; justify-content: center;
+          min-height: 40px; min-width: 0; overflow: hidden; }
+  .cell .v { font-size: 14px; font-weight: bold; white-space: nowrap; }
+  .cell .sub { font-size: 11px; color: #888; margin-top: 1px; white-space: nowrap; }
+  .cell.l { text-align: left; } .cell.r { text-align: right; }
+  .cell.fixed { flex: 0 0 112px; }
+  .strike { display: flex; align-items: center; justify-content: center; font-weight: bold;
+            color: #e0e0e0; background: #262626; }
+  .up { color: #ef5350; }
+  .down { color: #26a69a; }
+  .flat { color: #aaa; }
+  .na { color: #555; }
+
+  /* 现价带 */
+  .strip { text-align: center; padding: 7px 0; font-weight: bold; letter-spacing: 1px;
+           border-top: 1px solid #3a3a3a; border-bottom: 1px solid #3a3a3a; }
+  .strip.up { color: #ef5350; background: rgba(239,83,80,0.08); }
+  .strip.down { color: #26a69a; background: rgba(38,166,154,0.08); }
+  .strip.flat { color: #aaa; background: #252525; }
+
+  /* 底部过滤 + 指标分页 */
+  #filter-bar { display: flex; gap: 10px; padding: 8px 14px; border-top: 1px solid #333; flex-shrink: 0;
+                align-items: center; }
+  .fbtn { flex: 0 0 auto; padding: 6px 22px; border-radius: 5px; border: 1px solid #3a3a3a;
+          background: #252525; color: #aaa; cursor: pointer; }
+  .fbtn.active { background: #ff9800; color: #1a1a1a; border-color: #ff9800; font-weight: bold; }
+  body[data-filter="call"] .side.put, body[data-filter="put"] .side.call { visibility: hidden; }
+  .pgbtn { flex: 0 0 auto; width: 34px; height: 30px; border-radius: 5px; border: 1px solid #3a3a3a;
+           background: #252525; color: #aaa; cursor: pointer; font-size: 14px; }
+  .pgbtn:hover { border-color: #ff9800; color: #fff; }
+  #pg-hint { color: #666; font-size: 11px; }
+
+  /* 单方向列表视图 */
+  .list-table { width: 100%; border-collapse: collapse; }
+  .list-table thead th { position: sticky; top: 0; background: #2d2d2d; color: #ff9800; text-align: center;
+                         padding: 10px 12px; border-bottom: 2px solid #ff9800; font-weight: bold; z-index: 1; }
+  .list-table tbody td { padding: 10px 12px; border-bottom: 1px solid #2c2c2c; text-align: center;
+                         font-variant-numeric: tabular-nums; }
+  .list-row { cursor: pointer; }
+  .list-row:hover { background: #333; }
+  .list-row:nth-child(even) { background: #232323; }
+  .strike-col { font-weight: bold; color: #e0e0e0; }
+  .bold { font-weight: bold; }
+  .strip-row td { text-align: center; padding: 8px; font-weight: bold; letter-spacing: 1px;
+                  border-top: 1px solid #3a3a3a; border-bottom: 1px solid #3a3a3a; }
+  .strip-row.up td { color: #ef5350; background: rgba(239,83,80,0.08); }
+  .strip-row.down td { color: #26a69a; background: rgba(38,166,154,0.08); }
+  .strip-row.flat td { color: #aaa; background: #252525; }
+  .list-table .sub { font-size: 11px; color: #888; }
+
+  #empty { display: none; flex: 1; align-items: center; justify-content: center; color: #666; font-size: 15px; }
+
+  /* ===== 策略工具抽屉 ===== */
+  .leg-btns { display: inline-flex; gap: 3px; margin-left: 6px; }
+  .legbtn { border: 1px solid #3a3a3a; background: #252525; color: #999; border-radius: 3px;
+            font-size: 10px; padding: 1px 5px; cursor: pointer; line-height: 1.5; }
+  .legbtn.b:hover { border-color: #ef5350; color: #ef5350; }
+  .legbtn.s:hover { border-color: #26a69a; color: #26a69a; }
+
+  #strat { flex-shrink: 0; border-top: 2px solid #ff9800; background: #1a1a1a;
+           display: flex; flex-direction: column; max-height: 55vh; overflow: hidden; }
+  #strat.collapsed #strat-body { display: none; }
+  #strat-head { display: flex; align-items: center; gap: 10px; padding: 7px 14px; cursor: pointer;
+                background: #252525; }
+  #strat-head .t { font-weight: bold; color: #ff9800; font-size: 13px; }
+  #strat-head .cnt { color: #888; font-size: 12px; }
+  #strat-body { display: flex; min-height: 0; overflow: hidden; }
+  #strat-left { flex: 0 0 46%; display: flex; flex-direction: column; min-width: 0;
+                border-right: 1px solid #333; overflow-y: auto; }
+  #preset-bar { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px; border-bottom: 1px solid #2a2a2a; }
+  .prebtn { border: 1px solid #3a3a3a; background: #252525; color: #bbb; border-radius: 4px;
+            padding: 4px 9px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+  .prebtn:hover { border-color: #ff9800; color: #fff; }
+  #basket { flex: 1; overflow-y: auto; padding: 4px 10px 8px; }
+  .bleg { display: flex; align-items: center; gap: 6px; padding: 5px 0; border-bottom: 1px solid #262626;
+          font-size: 12px; }
+  .bleg .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bleg .sd { flex: 0 0 auto; border-radius: 3px; padding: 1px 6px; font-size: 10px; font-weight: bold;
+              cursor: pointer; border: 1px solid transparent; }
+  .bleg .sd.buy { background: rgba(239,83,80,.18); color: #ef5350; border-color: #ef5350; }
+  .bleg .sd.sell { background: rgba(38,166,154,.18); color: #26a69a; border-color: #26a69a; }
+  .bleg .qty { flex: 0 0 46px; background: #202020; border: 1px solid #3a3a3a; color: #eee;
+               border-radius: 3px; padding: 2px 4px; font-size: 11px; text-align: center; }
+  .bleg .px { flex: 0 0 58px; text-align: right; color: #aaa; font-variant-numeric: tabular-nums; }
+  .bleg .del { flex: 0 0 auto; border: none; background: none; color: #666; cursor: pointer; font-size: 13px; }
+  .bleg .del:hover { color: #ef5350; }
+  #basket-empty { color: #555; font-size: 12px; padding: 14px 2px; }
+
+  #strat-right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: #2a2a2a; }
+  .m { background: #1e1e1e; padding: 6px 9px; min-width: 0; }
+  .m .k { color: #777; font-size: 10px; white-space: nowrap; }
+  .m .v { font-size: 13px; font-weight: bold; font-variant-numeric: tabular-nums;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #payoff { flex: 1; min-height: 150px; }
+  #strat-msg { padding: 12px 14px; color: #888; font-size: 12px; }
+
+  /* AI 策略推荐面板 */
+  .ai-btn { border: 1px solid #ff9800; background: rgba(255,152,0,.12); color: #ff9800;
+            border-radius: 4px; padding: 4px 10px; font-size: 11px; cursor: pointer;
+            font-weight: bold; white-space: nowrap; }
+  .ai-btn:hover { background: rgba(255,152,0,.25); color: #fff; }
+  .ai-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  #ai-panel { display: none; padding: 10px 12px; border-bottom: 1px solid #2a2a2a;
+              background: #1a1a1a; }
+  #ai-panel.show { display: block; }
+  .ai-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+  .ai-field { display: flex; flex-direction: column; gap: 2px; }
+  .ai-field label { font-size: 10px; color: #888; }
+  .ai-field input, .ai-field select { background: #202020; border: 1px solid #3a3a3a;
+    color: #eee; border-radius: 3px; padding: 4px 6px; font-size: 11px; }
+  .ai-field input:focus, .ai-field select:focus { border-color: #ff9800; outline: none; }
+  .ai-submit { border: 1px solid #ff9800; background: #ff9800; color: #000; border-radius: 4px;
+               padding: 5px 14px; font-size: 11px; font-weight: bold; cursor: pointer; }
+  .ai-submit:hover { background: #ffb74d; }
+  .ai-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+  #ai-result { display: none; border-bottom: 1px solid #2a2a2a;
+               background: #1e2a1e; font-size: 11px; line-height: 1.6; }
+  #ai-result.show { display: block; }
+  #ai-result > details { padding: 0; }
+  #ai-result > details > summary { cursor: pointer; padding: 6px 12px; font-size: 11px;
+    color: #ff9800; font-weight: bold; user-select: none; display: flex; align-items: center; gap: 6px; }
+  #ai-result > details > summary:hover { background: #252a25; }
+  #ai-result .ai-body { padding: 6px 12px 8px; max-height: 180px; overflow-y: auto; }
+  #ai-result .ai-name { color: #ff9800; font-weight: bold; font-size: 12px; }
+  #ai-result .ai-reason { color: #ccc; margin: 4px 0; }
+  #ai-result .ai-risk { color: #aaa; }
+  #ai-result .ai-notes { color: #ffeb3b; margin-top: 4px; }
+  #ai-result .ai-legs { margin: 6px 0; padding: 0; list-style: none; }
+  #ai-result .ai-legs li { padding: 3px 0; border-bottom: 1px solid #2a3a2a; display: flex; gap: 8px; align-items: center; }
+  #ai-result .ai-legs .tag { display: inline-block; border-radius: 3px; padding: 1px 6px; font-size: 10px; font-weight: bold; }
+  #ai-result .ai-legs .tag.buy { background: rgba(239,83,80,.18); color: #ef5350; }
+  #ai-result .ai-legs .tag.sell { background: rgba(38,166,154,.18); color: #26a69a; }
+  #ai-result .ai-apply { border: 1px solid #26a69a; background: rgba(38,166,154,.15); color: #26a69a;
+    border-radius: 3px; padding: 3px 10px; font-size: 11px; cursor: pointer; margin-top: 6px; }
+  #ai-result .ai-apply:hover { background: rgba(38,166,154,.3); }
+  #ai-result .ai-thinking { margin-top: 6px; border: 1px solid #333; border-radius: 4px; overflow: hidden; }
+  #ai-result .ai-thinking summary { cursor: pointer; padding: 4px 8px; font-size: 10px; color: #888;
+    background: #222; user-select: none; }
+  #ai-result .ai-thinking summary:hover { color: #ccc; }
+  #ai-result .ai-thinking .think-body { padding: 6px 8px; font-size: 10px; color: #999;
+    max-height: 150px; overflow-y: auto; white-space: pre-wrap; line-height: 1.5; background: #1a1a1a; }
+  #ai-loading { display: none; padding: 12px; color: #ff9800; font-size: 12px; text-align: center; }
+  #ai-loading.show { display: block; }
+</style>
+</head>
+<body data-filter="all">
+<div id="header">
+  <span id="title">期权T型</span>
+  <span id="uprice" class="price-chip" style="display:none" title="点击回到现价"></span>
+  <span id="meta"></span>
+  <span style="flex:1"></span>
+  <button class="btn" id="locate">回到现价</button>
+</div>
+<div id="expiry-bar"></div>
+<div id="thead">
+  <div class="side-head call-head">
+    <div class="side-title">CALL 认购</div>
+    <div class="hrow">
+      <div class="colscroll"><div class="cinner">
+        <div class="page"><div class="hcell l">卖一价*数</div><div class="hcell l">买一价*数</div></div>
+        <div class="page"><div class="hcell l">成交量</div><div class="hcell l">持仓量</div></div>
+        <div class="page"><div class="hcell l">IV%</div><div class="hcell l">Delta</div></div>
+      </div></div>
+      <div class="hcell fixed r">最新价</div>
+    </div>
+  </div>
+  <div class="strike-head">行权价</div>
+  <div class="side-head put-head">
+    <div class="side-title">PUT 认沽</div>
+    <div class="hrow">
+      <div class="hcell fixed l">最新价</div>
+      <div class="colscroll"><div class="cinner">
+        <div class="page"><div class="hcell r">卖一价*数</div><div class="hcell r">买一价*数</div></div>
+        <div class="page"><div class="hcell r">成交量</div><div class="hcell r">持仓量</div></div>
+        <div class="page"><div class="hcell r">IV%</div><div class="hcell r">Delta</div></div>
+      </div></div>
+    </div>
+  </div>
+</div>
+<div id="twrap"></div>
+<div id="empty">暂无数据（先选择左侧 ETF 期权标的）</div>
+<div id="strat" class="collapsed">
+  <div id="strat-head">
+    <span class="t">策略组合</span>
+    <span class="cnt" id="strat-cnt">未选合约 · 点表格里的「买/卖」加腿</span>
+    <span style="flex:1"></span>
+    <button class="btn" id="strat-clear" style="padding:3px 10px">清空</button>
+    <span id="strat-toggle" style="color:#888">▲</span>
+  </div>
+  <div id="strat-body">
+    <div id="strat-left">
+      <div id="preset-bar"></div>
+      <div id="ai-panel">
+        <div class="ai-form">
+          <div class="ai-field">
+            <label>投入金额（元）</label>
+            <input type="number" id="ai-capital" value="10000" min="1000" step="1000">
+          </div>
+          <div class="ai-field">
+            <label>最大亏损（元）</label>
+            <input type="number" id="ai-maxloss" value="3000" min="500" step="500">
+          </div>
+          <div class="ai-field">
+            <label>持仓天数</label>
+            <select id="ai-days">
+              <option value="1">1天</option>
+              <option value="3" selected>3天</option>
+              <option value="7">7天</option>
+              <option value="14">14天</option>
+            </select>
+          </div>
+          <div class="ai-field">
+            <label>风格偏好</label>
+            <select id="ai-style">
+              <option value="保守">保守</option>
+              <option value="中性" selected>中性</option>
+              <option value="激进">激进</option>
+            </select>
+          </div>
+          <div class="ai-field">
+            <label>持有现货（份）</label>
+            <input type="number" id="ai-shares" value="0" min="0" step="10000" title="用于备兑策略，1张=10000份">
+          </div>
+          <div class="ai-field">
+            <label>方向预判</label>
+            <select id="ai-direction">
+              <option value="AI判断" selected>让AI判断</option>
+              <option value="看涨">看涨</option>
+              <option value="看跌">看跌</option>
+              <option value="震荡">震荡/方向不明</option>
+              <option value="大波动">预期大波动</option>
+            </select>
+          </div>
+          <div class="ai-field">
+            <label>目标价（选填）</label>
+            <input type="text" id="ai-target" value="" placeholder="如3.20 留空=AI判断">
+          </div>
+          <div class="ai-field">
+            <label>到期月</label>
+            <select id="ai-expiry-pref">
+              <option value="AI决定" selected>AI决定</option>
+              <option value="近月">近月</option>
+              <option value="远月">远月</option>
+            </select>
+          </div>
+          <div class="ai-field">
+            <label>允许裸卖？</label>
+            <select id="ai-naked-sell">
+              <option value="不允许" selected>不允许</option>
+              <option value="允许">允许（风险大）</option>
+            </select>
+          </div>
+          <div class="ai-field" style="justify-content:flex-end">
+            <button class="ai-submit" id="ai-go" onclick="submitAiStrategy()">开始分析</button>
+          </div>
+        </div>
+      </div>
+      <div id="ai-loading">🤖 AI 正在分析市场数据，请稍候...</div>
+      <div id="ai-result"></div>
+      <div id="basket"><div id="basket-empty">篮子是空的。点上面预设策略，或在表格行里点「买」「卖」。</div></div>
+    </div>
+    <div id="strat-right">
+      <div id="metrics"></div>
+      <div id="payoff"></div>
+      <div id="strat-msg" style="display:none"></div>
+    </div>
+  </div>
+</div>
+<div id="filter-bar">
+  <button class="fbtn active" data-f="all">全部期权</button>
+  <button class="fbtn" data-f="call">CALL 认购</button>
+  <button class="fbtn" data-f="put">PUT 认沽</button>
+  <span style="flex:1"></span>
+  <span id="pg-hint">左右滑看更多指标</span>
+  <button class="pgbtn" id="pg-left">◀</button>
+  <button class="pgbtn" id="pg-right">▶</button>
+</div>
+<script>
+new QWebChannel(qt.webChannelTransport, function(channel) {
+  window.pyBridge = channel.objects.bridge;
+});
+
+let S = { expiry: null, filter: 'all', ucode: null, colPage: 0 };
+let P = null;   // 当前 payload
+
+function cls(v) { return v > 0 ? 'up' : v < 0 ? 'down' : 'flat'; }
+function fmt(v, d) { return (v == null || isNaN(v)) ? '--' : Number(v).toFixed(d); }
+function fmtPct(v) {
+  if (v == null || isNaN(v)) return '--';
+  return (v > 0 ? '+' : '') + Number(v).toFixed(2) + '%';
+}
+function fmtVol(v) { return (v == null || isNaN(v)) ? '--' : 'x' + v; }
+function fmtCompact(v) {
+  if (v == null || isNaN(v)) return '--';
+  if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿';
+  if (v >= 1e4) return (v / 1e4).toFixed(1) + '万';
+  return '' + v;
+}
+
+function openContract(code, name) {
+  if (code && window.pyBridge) window.pyBridge.onRowClicked(code, name);
+}
+
+/* ===== 策略篮子 ===== */
+let BASKET = [];   // [{code, name, side, qty, price}]
+
+function legButtons(item) {
+  if (!item || !item.code) return '';
+  const nm = (item.name || '').replace(/'/g, '');
+  return `<span class="leg-btns">` +
+    `<button class="legbtn b" onclick="event.stopPropagation();addLeg('${item.code}','${nm}','buy')">买</button>` +
+    `<button class="legbtn s" onclick="event.stopPropagation();addLeg('${item.code}','${nm}','sell')">卖</button>` +
+    `</span>`;
+}
+
+function addLeg(code, name, side) {
+  const hit = BASKET.find(l => l.code === code && l.side === side);
+  if (hit) hit.qty += 1;
+  else BASKET.push({ code, name, side, qty: 1 });
+  openStrat();
+  submitStrategy();
+}
+
+function removeLeg(i) { BASKET.splice(i, 1); submitStrategy(); }
+function flipLeg(i) { BASKET[i].side = BASKET[i].side === 'buy' ? 'sell' : 'buy'; submitStrategy(); }
+function setQty(i, v) {
+  const n = Math.max(1, Math.min(999, parseInt(v, 10) || 1));
+  BASKET[i].qty = n;
+  submitStrategy();
+}
+function clearBasket() { BASKET = []; submitStrategy(); }
+
+function openStrat() {
+  document.getElementById('strat').classList.remove('collapsed');
+  const t = document.getElementById('strat-toggle');
+  if (t) t.textContent = '▼';
+  refreshPayoffSize();
+}
+
+function submitStrategy(preset) {
+  if (!window.pyBridge) return;
+  const req = {
+    underlying: S.ucode,
+    expiry: S.expiry,
+    legs: BASKET.map(l => ({ code: l.code, side: l.side, qty: l.qty })),
+  };
+  if (preset) req.preset = preset;
+  window.pyBridge.requestStrategy(JSON.stringify(req));
+}
+
+/* ===== AI 策略推荐 ===== */
+let _aiResult = null;
+
+function toggleAiPanel() {
+  const panel = document.getElementById('ai-panel');
+  panel.classList.toggle('show');
+  // 隐藏结果
+  document.getElementById('ai-result').classList.remove('show');
+  document.getElementById('ai-loading').classList.remove('show');
+}
+
+function submitAiStrategy() {
+  if (!window.pyBridge) return;
+  const btn = document.getElementById('ai-go');
+  btn.disabled = true;
+  btn.textContent = '分析中...';
+  document.getElementById('ai-loading').classList.add('show');
+  document.getElementById('ai-result').classList.remove('show');
+
+  const req = {
+    underlying: S.ucode,
+    expiry: S.expiry,
+    capital: parseFloat(document.getElementById('ai-capital').value) || 10000,
+    max_loss: parseFloat(document.getElementById('ai-maxloss').value) || 3000,
+    holding_days: parseInt(document.getElementById('ai-days').value) || 3,
+    style: document.getElementById('ai-style').value || '中性',
+    etf_shares: parseInt(document.getElementById('ai-shares').value) || 0,
+    direction: document.getElementById('ai-direction').value || 'AI判断',
+    target_price: document.getElementById('ai-target').value.trim() || '',
+    expiry_pref: document.getElementById('ai-expiry-pref').value || 'AI决定',
+    allow_naked_sell: document.getElementById('ai-naked-sell').value === '允许',
+  };
+  window.pyBridge.requestAiStrategy(JSON.stringify(req));
+}
+
+window.renderAiResult = function(result) {
+  const btn = document.getElementById('ai-go');
+  btn.disabled = false;
+  btn.textContent = '开始分析';
+  document.getElementById('ai-loading').classList.remove('show');
+
+  const box = document.getElementById('ai-result');
+  if (result.error) {
+    box.innerHTML = `<details open><summary>🤖 AI 分析失败</summary><div class="ai-body"><span style="color:#ef5350">${result.error}</span></div></details>`;
+    box.classList.add('show');
+    return;
+  }
+
+  _aiResult = result;
+
+  // 摘要行：只显示策略名（盈亏数字由填入篮子后精确计算，AI估的不准）
+  const legs = result.legs || [];
+  const legCount = legs.length;
+  const dirs = legs.map(l => l.side === 'buy' ? '买' : '卖').join('+');
+  const summaryText = `🤖 ${result.strategy_name || 'AI推荐'} · ${legCount}腿（${dirs}）· 点填入篮子查看精确损益`;
+
+  // 腿的详情
+  const legsHtml = legs.length ? '<ul class="ai-legs">' + legs.map(l => {
+    const side = l.side === 'buy' ? '买入' : '卖出';
+    const cls = l.side === 'buy' ? 'buy' : 'sell';
+    const typeStr = l.option_type === 'call' ? '认购' : (l.option_type === 'put' ? '认沽' : '');
+    const priceStr = l.price ? ` @${Number(l.price).toFixed(4)}` : '';
+    return `<li><span class="tag ${cls}">${side}</span>` +
+      `<span>${l.name || l.code || ''}</span>` +
+      `<span style="color:#aaa">${typeStr} K=${Number(l.strike||0).toFixed(3)}</span>` +
+      `<span style="color:#fff">${l.qty||1}张${priceStr}</span></li>`;
+  }).join('') + '</ul>' : '';
+
+  // 思考过程
+  const thinking = result.thinking || '';
+  const thinkHtml = thinking ? `<details class="ai-thinking"><summary>🧠 AI 思考过程</summary><div class="think-body">${thinking.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div></details>` : '';
+
+  box.innerHTML = `<details open>
+    <summary>${summaryText} <button class="ai-apply" onclick="event.stopPropagation();applyAiStrategy()" style="margin-left:auto">填入篮子</button></summary>
+    <div class="ai-body">
+      <div class="ai-reason">${result.reasoning || ''}</div>
+      ${legsHtml}
+      ${result.notes ? '<div class="ai-notes">💡 ' + result.notes + '</div>' : ''}
+      ${thinkHtml}
+    </div>
+  </details>`;
+  box.classList.add('show');
+  document.getElementById('ai-panel').classList.remove('show');
+};
+
+function applyAiStrategy() {
+  if (!_aiResult || !_aiResult.legs) return;
+  // 清空篮子，填入 AI 推荐的腿
+  BASKET = [];
+  _aiResult.legs.forEach(l => {
+    BASKET.push({
+      code: l.code,
+      name: l.name || l.code,
+      side: l.side,
+      qty: l.qty || 1,
+      price: l.price || 0,
+    });
+  });
+  // AI 结果面板保留可见（用户可以继续查看原因和思考过程）
+  // 提交策略计算
+  submitStrategy();
+}
+
+function cell(align, v, sub, vcls) {
+  return `<div class="cell ${align}"><div class="v ${vcls || ''}">${v}</div>` +
+         `<div class="sub ${vcls || ''}">${sub || ''}</div></div>`;
+}
+
+function sideHtml(item, type) {
+  const a = type === 'call' ? 'l' : 'r';
+  const hasQ = !!(item && item.price != null);
+  let inner;
+  if (!item) {
+    const blank = `<div class="page">${cell(a,'--','','na')}${cell(a,'--','','na')}</div>`;
+    inner = `<div class="colscroll"><div class="cinner">${blank}${blank}${blank}</div></div>`;
+    const fx = `<div class="cell fixed ${type === 'call' ? 'r' : 'l'}"><div class="v na">--</div></div>`;
+    return `<div class="cblock">${type === 'call' ? inner + fx : fx + inner}</div>`;
+  }
+  const pc = hasQ ? cls(item.change_pct) : 'na';
+  const tip = hasQ
+    ? `${item.name} (${item.code})\n买 ${fmt(item.buy_price,4)} ${fmtVol(item.buy_vol)} / 卖 ${fmt(item.sell_price,4)} ${fmtVol(item.sell_vol)}\n` +
+      `量 ${item.volume ?? '--'} · 持仓 ${item.oi ?? '--'} · IV ${item.iv != null ? (item.iv*100).toFixed(1)+'%' : '--'} · Delta ${fmt(item.delta,4)}\n点击查看分时 K 线`
+    : `${item.name} (${item.code})\n暂无行情\n点击查看分时 K 线`;
+
+  const p0 = `<div class="page">${cell(a, hasQ?fmt(item.sell_price,4):'--', hasQ?fmtVol(item.sell_vol):'')}` +
+             `${cell(a, hasQ?fmt(item.buy_price,4):'--', hasQ?fmtVol(item.buy_vol):'')}</div>`;
+  const p1 = `<div class="page">${cell(a, hasQ?fmtCompact(item.volume):'--', '量', hasQ?pc:'na')}` +
+             `${cell(a, hasQ?fmtCompact(item.oi):'--', '持')}</div>`;
+  const p2 = `<div class="page">${cell(a, hasQ&&item.iv!=null?(item.iv*100).toFixed(1)+'%':'--', 'IV')}` +
+             `${cell(a, hasQ?fmt(item.delta,4):'--', 'Δ')}</div>`;
+  const scroll = `<div class="colscroll"><div class="cinner">${p0}${p1}${p2}</div></div>`;
+  const fixed = `<div class="cell fixed ${type === 'call' ? 'r' : 'l'}">` +
+                `<div class="v ${pc}">${hasQ ? fmt(item.price,4) : '--'}</div>` +
+                `<div class="sub ${pc}">${hasQ ? fmtPct(item.change_pct) : ''}${legButtons(item)}</div></div>`;
+  return `<div class="cblock" title="${tip}" onclick="openContract('${item.code}', '${item.name}')">` +
+         `${type === 'call' ? scroll + fixed : fixed + scroll}</div>`;
+}
+
+function renderRows() {
+  const wrap = document.getElementById('twrap');
+  const rows = (P.rows && P.rows[S.expiry]) || [];
+  const empty = document.getElementById('empty');
+  if (!rows.length) {
+    wrap.innerHTML = '';
+    empty.style.display = 'flex';
+    return;
+  }
+  empty.style.display = 'none';
+
+  const u = P.underlying || {};
+  const up = u.price;
+
+  // 单方向过滤时用列表视图（类似截图：行权价/最新价/卖一/买一/涨跌幅）
+  if (S.filter === 'call' || S.filter === 'put') {
+    renderListView(rows, u, S.filter);
+    return;
+  }
+
+  let html = '';
+  let stripInserted = false;
+  const stripHtml = `<div class="strip ${cls(u.change_pct)}" id="strip">现价： ${fmt(up,3)}` +
+                    ` ${u.change != null ? (u.change > 0 ? '+' : '') + fmt(u.change,3) : ''} ${fmtPct(u.change_pct)}</div>`;
+  if (up == null) stripInserted = true;  // 无标的行情不插现价带
+
+  rows.forEach(r => {
+    if (!stripInserted && r.strike > up) {
+      html += stripHtml;
+      stripInserted = true;
+    }
+    const n = Math.max(r.calls.length, r.puts.length, 1);
+    let callBlocks = '', putBlocks = '';
+    for (let i = 0; i < n; i++) {
+      callBlocks += sideHtml(r.calls[i] || null, 'call');
+      putBlocks += sideHtml(r.puts[i] || null, 'put');
+    }
+    html += `<div class="srow"><div class="side call">${callBlocks}</div>` +
+            `<div class="strike">${fmt(r.strike,3)}</div>` +
+            `<div class="side put">${putBlocks}</div></div>`;
+  });
+  if (!stripInserted) html += stripHtml;
+  wrap.innerHTML = html;
+  applyColPage();
+}
+
+function renderListView(rows, u, type) {
+  const wrap = document.getElementById('twrap');
+  const up = u.price;
+  let html = '<table class="list-table"><thead><tr>' +
+    '<th>行权价</th><th>最新价</th><th>卖一价*数</th><th>买一价*数</th><th>涨跌幅</th>' +
+    '</tr></thead><tbody>';
+  let stripInserted = false;
+  const stripRow = `<tr class="strip-row ${cls(u.change_pct)}"><td colspan="5">现价： ${fmt(up,3)}` +
+    ` ${u.change != null ? (u.change > 0 ? '+' : '') + fmt(u.change,3) : ''} ${fmtPct(u.change_pct)}</td></tr>`;
+  if (up == null) stripInserted = true;
+
+  rows.forEach(r => {
+    if (!stripInserted && r.strike > up) {
+      html += stripRow;
+      stripInserted = true;
+    }
+    const items = type === 'call' ? r.calls : r.puts;
+    items.forEach(item => {
+      if (!item) return;
+      const pc = cls(item.change_pct);
+      html += `<tr class="list-row" onclick="openContract('${item.code}','${item.name}')">` +
+        `<td class="strike-col">${fmt(r.strike,3)}</td>` +
+        `<td class="${pc} bold">${item.price != null ? fmt(item.price,4) : '--'}</td>` +
+        `<td>${item.sell_price != null ? fmt(item.sell_price,4) : '--'}<br><span class="sub">x${item.sell_vol ?? '--'}</span></td>` +
+        `<td>${item.buy_price != null ? fmt(item.buy_price,4) : '--'}<br><span class="sub">x${item.buy_vol ?? '--'}</span></td>` +
+        `<td class="${pc} bold">${fmtPct(item.change_pct)}${legButtons(item)}</td>` +
+        `</tr>`;
+    });
+  });
+  if (!stripInserted) html += stripRow;
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+function renderExpiries() {
+  const bar = document.getElementById('expiry-bar');
+  const exps = P.expiries || [];
+  if (!exps.some(e => e.date === S.expiry)) S.expiry = P.defaultExpiry || (exps[0] && exps[0].date);
+  bar.innerHTML = exps.map(e =>
+    `<span class="chip ${e.date === S.expiry ? 'active' : ''}" data-d="${e.date}">` +
+    `${e.label}${e.days != null ? '(' + e.days + ')' : ''}</span>`
+  ).join('');
+  bar.querySelectorAll('.chip').forEach(c => {
+    c.onclick = () => { S.expiry = c.dataset.d; renderExpiries(); renderRows(); };
+  });
+}
+
+window.renderTShape = function(payload) {
+  const wrap = document.getElementById('twrap');
+  const sameU = S.ucode === ((payload.underlying || {}).code);
+  const oldTop = wrap.scrollTop;
+  P = payload;
+  S.ucode = (payload.underlying || {}).code;
+
+  const u = payload.underlying || {};
+  document.getElementById('meta').textContent = payload.meta || '';
+  document.getElementById('empty').textContent = payload.emptyHint || '暂无数据（先选择左侧 ETF 期权标的）';
+  const chip = document.getElementById('uprice');
+  if (u.price != null) {
+    chip.style.display = '';
+    chip.textContent = `${u.name || u.code} ${fmt(u.price,3)} ${fmtPct(u.change_pct)}`;
+    chip.className = 'price-chip ' + cls(u.change_pct);
+  } else {
+    chip.style.display = 'none';
+  }
+
+  renderExpiries();
+  renderRows();
+
+  if (sameU) {
+    wrap.scrollTop = oldTop;  // 行情刷新保持滚动位置
+  } else {
+    BASKET = [];              // 换标的清空篮子（跨标的组合无意义）
+    requestAnimationFrame(scrollToStrip);
+  }
+  // 拉一次策略数据（首次可拿到预设按钮列表；有腿则同步刷新指标）
+  submitStrategy();
+};
+
+function scrollToStrip() {
+  const strip = document.getElementById('strip');
+  const wrap = document.getElementById('twrap');
+  if (strip) wrap.scrollTop = Math.max(0, strip.offsetTop - wrap.clientHeight / 2 + 40);
+}
+
+/* ---- 指标列横向滚动（全部 .colscroll 同步） ---- */
+let _syncing = false;
+document.addEventListener('scroll', (e) => {
+  if (!e.target.classList || !e.target.classList.contains('colscroll') || _syncing) return;
+  _syncing = true;
+  const left = e.target.scrollLeft;
+  if (e.target.clientWidth > 0) S.colPage = Math.round(left / e.target.clientWidth);
+  document.querySelectorAll('.colscroll').forEach(el => { if (el !== e.target) el.scrollLeft = left; });
+  requestAnimationFrame(() => { _syncing = false; });
+}, true);
+
+function applyColPage() {
+  requestAnimationFrame(() => {
+    const el = document.querySelector('#twrap .colscroll');
+    if (!el) return;
+    const left = S.colPage * el.clientWidth;
+    document.querySelectorAll('.colscroll').forEach(x => { x.scrollLeft = left; });
+  });
+}
+
+function pageScroll(dir) {
+  const el = document.querySelector('#twrap .colscroll');
+  if (!el) return;
+  S.colPage = Math.min(2, Math.max(0, S.colPage + dir));
+  applyColPage();
+}
+
+document.getElementById('pg-left').onclick = () => pageScroll(-1);
+document.getElementById('pg-right').onclick = () => pageScroll(1);
+document.getElementById('locate').onclick = scrollToStrip;
+document.getElementById('uprice').onclick = scrollToStrip;
+document.querySelectorAll('.fbtn').forEach(b => {
+  b.onclick = () => {
+    S.filter = b.dataset.f;
+    document.body.dataset.filter = S.filter;
+    document.querySelectorAll('.fbtn').forEach(x => x.classList.toggle('active', x === b));
+    renderRows();
+  };
+});
+
+/* ===================== 策略工具渲染 ===================== */
+let payoffChart = null;
+let PRESETS_RENDERED = false;
+
+function refreshPayoffSize() {
+  if (payoffChart) requestAnimationFrame(() => payoffChart.resize());
+}
+
+function fmtMoney(v) {
+  if (v == null || isNaN(v)) return '无限';
+  const a = Math.abs(v);
+  const s = v > 0 ? '+' : (v < 0 ? '-' : '');
+  if (a >= 10000) return `${s}${(a / 10000).toFixed(2)}万`;
+  return `${s}${a.toFixed(0)}`;
+}
+
+function renderPresets(presets) {
+  if (PRESETS_RENDERED || !presets || !presets.length) return;
+  const bar = document.getElementById('preset-bar');
+  bar.innerHTML = presets.map(p =>
+    `<button class="prebtn" data-k="${p.key}" title="${p.desc}">${p.label}</button>`
+  ).join('') + '<button class="ai-btn" id="ai-toggle-btn" onclick="toggleAiPanel()">🤖 AI 推荐</button>';
+  bar.querySelectorAll('.prebtn').forEach(b => {
+    b.onclick = () => { BASKET = []; submitStrategy(b.dataset.k); };
+  });
+  PRESETS_RENDERED = true;
+}
+
+function renderBasket(legs) {
+  const box = document.getElementById('basket');
+  const cnt = document.getElementById('strat-cnt');
+  if (!legs || !legs.length) {
+    box.innerHTML = '<div id="basket-empty">篮子是空的。点上面预设策略，或在表格行里点「买」「卖」。</div>';
+    cnt.textContent = '未选合约 · 点表格里的「买/卖」加腿';
+    return;
+  }
+  box.innerHTML = legs.map((l, i) => {
+    const sideCls = l.side === 'buy' ? 'buy' : 'sell';
+    const sideTxt = l.side === 'buy' ? '买' : '卖';
+    return `<div class="bleg">` +
+      `<span class="sd ${sideCls}" onclick="flipLeg(${i})" title="点击切换买/卖">${sideTxt}</span>` +
+      `<span class="nm" title="${l.name} ${l.code} · 剩余${l.days}天">${l.name || l.code}</span>` +
+      `<input class="qty" type="number" min="1" value="${l.qty}" onchange="setQty(${i}, this.value)">` +
+      `<span class="px">${fmt(l.price, 4)}</span>` +
+      `<button class="del" onclick="removeLeg(${i})" title="移除">✕</button>` +
+      `</div>`;
+  }).join('');
+  const totalQty = legs.reduce((a, l) => a + l.qty, 0);
+  cnt.textContent = `${legs.length} 条腿 / ${totalQty} 张 · 剩余 ${legs[0].days} 天到期`;
+}
+
+function renderMetrics(p) {
+  const s = p.summary || {}, g = p.greeks || {}, d = p.decay || {};
+  const cost = s.netCost || 0;
+  const costTxt = cost >= 0 ? `支出 ${fmtMoney(cost).replace('+','')}` : `收入 ${fmtMoney(-cost).replace('+','')}`;
+  const be = (s.breakevens || []).map(v => fmt(v, 3)).join(' / ') || '--';
+  const perDay = d.perDay;
+  const items = [
+    ['净成本', costTxt, cost >= 0 ? 'flat' : 'up'],
+    ['最大盈利', s.maxProfit == null ? '理论无限' : fmtMoney(s.maxProfit), 'up'],
+    ['最大亏损', s.maxLoss == null ? '理论无限' : fmtMoney(s.maxLoss), 'down'],
+    ['盈亏平衡', be, 'flat'],
+    ['每日时间损耗', fmtMoney(perDay) + ' 元/天', perDay >= 0 ? 'up' : 'down'],
+    ['Delta', (g.delta || 0).toFixed(0) + ' 元/元', (g.delta || 0) >= 0 ? 'up' : 'down'],
+    ['Vega', (g.vega || 0).toFixed(0) + ' 元/1%', (g.vega || 0) >= 0 ? 'up' : 'down'],
+    ['风险报酬比', s.riskReward == null ? '--' : (s.riskReward.toFixed(2) + ' : 1'), 'flat'],
+  ];
+  document.getElementById('metrics').innerHTML = items.map(([k, v, c]) =>
+    `<div class="m"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`
+  ).join('');
+}
+
+function renderPayoff(p) {
+  const el = document.getElementById('payoff');
+  el.style.display = 'block';
+  if (!payoffChart) payoffChart = echarts.init(el, null, { renderer: 'canvas' });
+  const curve = p.curve || [];
+  const xs = curve.map(c => c.s);
+  const ys = curve.map(c => c.p);
+  const spot = p.spot;
+  const d = p.decay || {};
+  const items = d.items || [];
+
+  payoffChart.setOption({
+    backgroundColor: '#1e1e1e',
+    animation: false,
+    grid: { left: 58, right: 16, top: 26, bottom: 26 },
+    tooltip: {
+      trigger: 'axis', backgroundColor: '#2d2d2d', borderColor: '#555',
+      textStyle: { color: '#eee', fontSize: 12 },
+      formatter: (ps) => {
+        if (!ps || !ps.length) return '';
+        const x = Number(ps[0].axisValue);
+        const v = ps[0].data;
+        const pct = spot > 0 ? ((x / spot - 1) * 100).toFixed(2) : '--';
+        const c = v >= 0 ? '#ef5350' : '#26a69a';
+        return `标的 ${x.toFixed(3)}（${pct >= 0 ? '+' : ''}${pct}%）<br/>` +
+               `到期损益 <span style="color:${c}">${fmtMoney(v)} 元</span>`;
+      }
+    },
+    xAxis: {
+      type: 'category', data: xs.map(v => v.toFixed(3)), boundaryGap: false,
+      axisLine: { lineStyle: { color: '#555' } },
+      axisLabel: { color: '#999', fontSize: 10, interval: Math.max(1, Math.floor(xs.length / 8)) },
+    },
+    yAxis: {
+      type: 'value', splitLine: { lineStyle: { color: '#2c2c2c' } },
+      axisLabel: { color: '#999', fontSize: 10, formatter: (v) => fmtMoney(v) },
+    },
+    series: [{
+      name: '到期损益', type: 'line', data: ys, symbol: 'none',
+      lineStyle: { width: 2, color: '#ff9800' },
+      areaStyle: { color: 'rgba(255,152,0,0.10)' },
+      markLine: {
+        symbol: 'none', silent: true,
+        data: [
+          { yAxis: 0, lineStyle: { color: '#666', type: 'solid', width: 1 } },
+          ...(spot > 0 ? [{
+            xAxis: spot.toFixed(3),
+            lineStyle: { color: '#4fc3f7', type: 'dashed', width: 1 },
+            label: { show: true, formatter: '现价', color: '#4fc3f7', fontSize: 10, position: 'insideEndTop' }
+          }] : []),
+          ...(p.summary && p.summary.breakevens || []).map(b => ({
+            xAxis: b.toFixed(3),
+            lineStyle: { color: '#9c27b0', type: 'dotted', width: 1 },
+          })),
+        ]
+      },
+    }],
+    title: {
+      text: items.length
+        ? `标的不动：1天 ${fmtMoney(items[0].pnl)} · 3天 ${fmtMoney(items[1] ? items[1].pnl : null)} · 7天 ${fmtMoney(items[2] ? items[2].pnl : null)}`
+        : '',
+      left: 'center', top: 4,
+      textStyle: { color: '#888', fontSize: 11, fontWeight: 'normal' },
+    },
+  }, true);
+  payoffChart.resize();
+}
+
+window.renderStrategy = function(p) {
+  const msg = document.getElementById('strat-msg');
+  const metrics = document.getElementById('metrics');
+  const payoff = document.getElementById('payoff');
+  renderPresets(p.presets);
+
+  if (p.error || p.empty) {
+    renderBasket(p.legs || null);
+    metrics.innerHTML = '';
+    payoff.style.display = 'none';
+    msg.style.display = 'block';
+    msg.textContent = p.error || '篮子是空的，加腿后这里显示损益图与指标。';
+    return;
+  }
+  msg.style.display = 'none';
+
+  // 预设返回的腿要同步回本地篮子，后续可继续微调
+  BASKET = (p.legs || []).map(l => ({ code: l.code, name: l.name, side: l.side, qty: l.qty }));
+  renderBasket(p.legs);
+  renderMetrics(p);
+  openStrat();          // 有腿就展开抽屉（预设按钮点完直接看到结果）
+  renderPayoff(p);
+};
+
+document.getElementById('strat-head').onclick = (e) => {
+  if (e.target.id === 'strat-clear') return;
+  const box = document.getElementById('strat');
+  box.classList.toggle('collapsed');
+  document.getElementById('strat-toggle').textContent = box.classList.contains('collapsed') ? '▲' : '▼';
+  refreshPayoffSize();
+};
+document.getElementById('strat-clear').onclick = (e) => { e.stopPropagation(); clearBasket(); };
+window.addEventListener('resize', refreshPayoffSize);
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+# 日进斗金（ETF/期权盯盘）— runtime dependencies
+PySide6>=6.6.0
+APScheduler>=3.10.0
+httpx>=0.27.0
+pydantic>=2.0
+PyYAML>=6.0
+platformdirs>=4.0
+akshare>=1.14.0
+pytdx>=1.72
+pytz
+
+# macOS 原生系统通知（UNUserNotificationCenter，支持横幅弹出 + 点击跳转）
+# 非 macOS 平台会自动降级到托盘气泡通知，可不安装
+pyobjc-framework-UserNotifications>=10.0; sys_platform == "darwin"

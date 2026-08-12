@@ -1,0 +1,9 @@
+<RCC>
+  <qresource prefix="/web">
+    <file alias="echarts.min.js">echarts.min.js</file>
+    <file alias="chart.html">chart.html</file>
+    <file alias="table.html">table.html</file>
+    <file alias="tshape.html">tshape.html</file>
+    <file alias="analysis.html">analysis.html</file>
+  </qresource>
+</RCC>

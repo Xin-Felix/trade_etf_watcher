@@ -1,0 +1,122 @@
+# ETF Watcher 默认配置
+
+app:
+  name: "日进斗金"
+  version: "0.1.0"
+  # 行情快照轮询周期（TDX 无限流，5s 一轮，信号更及时）
+  poll_interval_seconds: 5
+  # 分钟 K 线刷新周期（分钟级信号依赖最新 bar，TDX 并发批量拉取，与快照同频）
+  minute_refresh_seconds: 5
+  timezone: "Asia/Shanghai"
+  # 是否只在交易时段轮询
+  trading_hours_only: true
+
+# 默认监控标的（11 个期权标的 ETF：沪市 6 + 深市 5，加 2 个指数）
+watchlist:
+  - code: "sh510050"
+    name: "上证50ETF"
+  - code: "sh510300"
+    name: "沪深300ETF"
+  - code: "sh510500"
+    name: "中证500ETF"
+  - code: "sh588000"
+    name: "科创50ETF"
+  - code: "sh588080"
+    name: "科创50ETF易方达"
+  - code: "sh588050"
+    name: "科创50ETF工银"
+  - code: "sz159919"
+    name: "沪深300ETF"
+  - code: "sz159915"
+    name: "创业板ETF"
+  - code: "sz159922"
+    name: "中证500ETF"
+  - code: "sz159901"
+    name: "深证100ETF"
+  - code: "sz159952"
+    name: "创业板ETF易方达"
+
+# 全局阈值（可被单个标的覆盖）
+thresholds:
+  gap: 0.008          # 跳空 ≥ 0.8%
+  surge: 0.020        # 急涨 ≥ 2.0%
+  plunge: 0.020       # 急跌 ≥ 2.0%
+  rebound_start: 0.010      # 探底起点：跌破昨收 1%
+  rebound_bounce: 0.010     # 反弹幅度 ≥ 1%
+  reversal_start: 0.010     # 冲高起点：涨超昨收 1%
+  reversal_pullback: 0.010  # 回落幅度 ≥ 1%
+  minute_surge: 0.005       # 单分钟急涨 ≥ 0.5%
+  minute_plunge: 0.005      # 单分钟急跌 ≥ 0.5%
+  # 期权信号
+  iv_surge: 0.50             # 单合约 IV ≥ 50% 触发
+  pcr_high: 1.5              # PCR 持仓量比 ≥ 1.5（极度看空信号）
+  pcr_low: 0.5               # PCR 持仓量比 ≤ 0.5（极度看多信号）
+  # 技术指标信号（买方入场参考，基于 5 分钟 K 线）
+  rsi_oversold: 30            # RSI < 30 后回升 → 超卖反弹（买认购）
+  rsi_overbought: 70          # RSI > 70 后回落 → 超买回落（买认沽）
+  kdj_low: 30                 # KDJ 金叉需在低位区 < 30
+  kdj_high: 70                # KDJ 死叉需在高位区 > 70
+  vol_breakout_mult: 1.5      # 放量突破：当前量 > 5日均量 × 1.5 倍
+
+# 买卖点信号开关
+signal_toggles:
+  # 只用量价形态判买卖点（量爆跟随/量堆积启动/挤压突破/洗盘拉回/高位破位 等）
+  # MACD、均线、RSI 等滞后指标已移除：ETF 日内实测误报多，且常把主升浪砍在半路
+  volume_pattern: true
+  # 市场日内动量（Gao et al. 2018）：14:30 推送末半小时方向参考
+  # 一年 ETF 数据实测：早盘>0 且 14:00-14:30>0 时做多末半小时 t=+5.00
+  intraday_momentum: true
+
+# 数据源优先级
+data_sources:
+  - "tdx"
+  - "eastmoney"
+
+# TDX 主行情服务器池（IP 可能变动，启动时会动态探测最快节点）
+tdx_servers:
+  - host: "60.12.136.250"
+    port: 7709
+  - host: "115.238.56.198"
+    port: 7709
+  - host: "115.238.90.165"
+    port: 7709
+  - host: "180.153.18.170"
+    port: 7709
+  - host: "60.191.117.167"
+    port: 7709
+  - host: "218.75.126.9"
+    port: 7709
+  - host: "jstdx.gtjas.com"
+    port: 7709
+  - host: "shtdx.gtjas.com"
+    port: 7709
+  - host: "sztdx.gtjas.com"
+    port: 7709
+
+# 通知设置
+notifications:
+  desktop_popup: true
+  tray_message: true
+  sound: false
+
+# Tushare 数据源（期权历史日K + 交易日历）
+# token 不写在这里，放 ~/.config/etf_watcher/secrets.env 的 TUSHARE_TOKEN
+tushare:
+  enabled: true
+  option_daily: true            # 期权日K 优先 Tushare（历史最全，含持仓量）
+  fund_daily_fallback: true     # TDX 日K 失败时用 Tushare 兜底
+  trade_calendar: true          # 交易日历：节假日不轮询
+
+# DeepSeek AI 策略推荐
+# api_key 不写在这里，放 ~/.config/etf_watcher/secrets.env 的 DEEPSEEK_API_KEY
+deepseek:
+  enabled: true
+  model: "deepseek-chat"
+  base_url: "https://api.deepseek.com"
+  timeout: 30
+  max_tokens: 2000
+
+# 选项（开发/测试用）
+dev:
+  mock_mode: false
+  mock_data_path: null

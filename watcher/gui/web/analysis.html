@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>期权分析</title>
+<script src="qrc:/web/echarts.min.js"></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1e1e1e; color: #e0e0e0; font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+         font-size: 13px; display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+         font-variant-numeric: tabular-nums; }
+
+  #header { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid #333; }
+  #title { font-size: 15px; font-weight: bold; color: #ff9800; }
+  #meta { color: #888; font-size: 12px; }
+  .price-chip { padding: 3px 10px; border-radius: 4px; background: #252525; border: 1px solid #3a3a3a;
+                font-weight: bold; font-size: 13px; }
+
+  /* 到期日 chips */
+  #expiry-bar { display: flex; gap: 8px; padding: 8px 14px; overflow-x: auto; border-bottom: 1px solid #333;
+                flex-shrink: 0; }
+  .chip { padding: 5px 14px; border: 1px solid #3a3a3a; border-radius: 5px; color: #aaa; cursor: pointer;
+          white-space: nowrap; background: #252525; }
+  .chip:hover { border-color: #ff9800; color: #fff; }
+  .chip.active { border-color: #ff9800; color: #ff9800; font-weight: bold; background: #2d2519; }
+
+  /* 主体滚动区域 */
+  #content { flex: 1; overflow-y: auto; padding: 0; }
+
+  /* 各面板 */
+  .panel { border-bottom: 1px solid #333; }
+  .panel-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px; cursor: pointer;
+                background: #252525; }
+  .panel-head .t { font-weight: bold; color: #ff9800; font-size: 13px; }
+  .panel-head .hint { color: #888; font-size: 11px; }
+  .panel-head .toggle { color: #888; }
+  .panel.collapsed .panel-body { display: none; }
+
+  /* 图表区 */
+  .chart-box { width: 100%; height: 250px; }
+
+  /* 卖方指标卡片 */
+  #seller-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 8px;
+                  padding: 12px 14px; }
+  .s-card { background: #252525; border: 1px solid #3a3a3a; border-radius: 6px; padding: 10px 12px; }
+  .s-card .s-label { color: #888; font-size: 11px; margin-bottom: 3px; }
+  .s-card .s-value { font-size: 16px; font-weight: bold; font-variant-numeric: tabular-nums; }
+  .s-card .s-note { color: #666; font-size: 10px; margin-top: 3px; }
+  .s-card .s-value.up { color: #ef5350; }
+  .s-card .s-value.down { color: #26a69a; }
+  .s-card .s-value.neutral { color: #e0e0e0; }
+  .s-card .s-value.warn { color: #ff9800; }
+
+  .up { color: #ef5350; }
+  .down { color: #26a69a; }
+  .flat { color: #aaa; }
+
+  #empty { display: none; flex: 1; align-items: center; justify-content: center; color: #666; font-size: 15px;
+           padding: 60px 0; text-align: center; }
+</style>
+</head>
+<body>
+<div id="header">
+  <span id="title">期权分析</span>
+  <span id="uprice" class="price-chip" style="display:none"></span>
+  <span id="meta"></span>
+</div>
+<div id="expiry-bar"></div>
+<div id="content">
+  <div id="empty">暂无数据（先在左侧选择 ETF 期权标的）</div>
+
+  <!-- 卖方指标面板 -->
+  <div class="panel" id="panel-seller">
+    <div class="panel-head" data-panel="panel-seller">
+      <span class="t">卖方指标</span>
+      <span class="hint" id="seller-hint">当前到期月 · 卖方参考</span>
+      <span style="flex:1"></span>
+      <span class="toggle">▼</span>
+    </div>
+    <div class="panel-body">
+      <div id="seller-cards"></div>
+    </div>
+  </div>
+
+  <!-- 波动率微笑 -->
+  <div class="panel" id="panel-smile">
+    <div class="panel-head" data-panel="panel-smile">
+      <span class="t">波动率微笑</span>
+      <span class="hint" id="smile-hint">IV vs 行权价</span>
+      <span style="flex:1"></span>
+      <span class="toggle">▼</span>
+    </div>
+    <div class="panel-body">
+      <div id="smile-chart" class="chart-box"></div>
+    </div>
+  </div>
+
+  <!-- 持仓量分布 -->
+  <div class="panel" id="panel-oi">
+    <div class="panel-head" data-panel="panel-oi">
+      <span class="t">持仓量分布</span>
+      <span class="hint" id="oi-hint">各行权价 OI · Call墙/Put墙/MaxPain</span>
+      <span style="flex:1"></span>
+      <span class="toggle">▼</span>
+    </div>
+    <div class="panel-body">
+      <div id="oi-chart" class="chart-box"></div>
+    </div>
+  </div>
+
+  <!-- 多到期月微笑对比 -->
+  <div class="panel" id="panel-smile-all">
+    <div class="panel-head" data-panel="panel-smile-all">
+      <span class="t">波动率微笑（多月对比）</span>
+      <span class="hint" id="smile-all-hint">各到期月 IV 曲线叠加</span>
+      <span style="flex:1"></span>
+      <span class="toggle">▼</span>
+    </div>
+    <div class="panel-body">
+      <div id="smile-all-chart" class="chart-box" style="height:280px"></div>
+    </div>
+  </div>
+
+  <!-- 波动率曲面热力图 -->
+  <div class="panel" id="panel-surface">
+    <div class="panel-head" data-panel="panel-surface">
+      <span class="t">波动率曲面</span>
+      <span class="hint" id="surface-hint">到期月 × 行权价 热力图</span>
+      <span style="flex:1"></span>
+      <span class="toggle">▼</span>
+    </div>
+    <div class="panel-body">
+      <div id="surface-chart" class="chart-box" style="height:300px"></div>
+    </div>
+  </div>
+
+  <!-- 平值 IV 期限结构 -->
+  <div class="panel" id="panel-term">
+    <div class="panel-head" data-panel="panel-term">
+      <span class="t">平值 IV 期限结构</span>
+      <span class="hint" id="term-hint">各到期月 ATM IV</span>
+      <span style="flex:1"></span>
+      <span class="toggle">▼</span>
+    </div>
+    <div class="panel-body">
+      <div id="term-chart" class="chart-box"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+new QWebChannel(qt.webChannelTransport, function(channel) {
+  window.pyBridge = channel.objects.bridge;
+});
+
+let S = { expiry: null, ucode: null };
+let P = null;
+
+function cls(v) { return v > 0 ? 'up' : v < 0 ? 'down' : 'flat'; }
+function fmt(v, d) { return (v == null || isNaN(v)) ? '--' : Number(v).toFixed(d); }
+function fmtPct(v) {
+  if (v == null || isNaN(v)) return '--';
+  return (v > 0 ? '+' : '') + Number(v).toFixed(2) + '%';
+}
+function fmtCompact(v) {
+  if (v == null || isNaN(v)) return '--';
+  if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿';
+  if (v >= 1e4) return (v / 1e4).toFixed(1) + '万';
+  return '' + v;
+}
+
+/* ===== 面板折叠 ===== */
+document.querySelectorAll('.panel-head').forEach(h => {
+  h.onclick = () => {
+    const panel = document.getElementById(h.dataset.panel);
+    panel.classList.toggle('collapsed');
+    h.querySelector('.toggle').textContent = panel.classList.contains('collapsed') ? '▲' : '▼';
+    // 展开时 resize 图表
+    if (!panel.classList.contains('collapsed')) {
+      setTimeout(() => { if (smileChart) smileChart.resize(); if (oiChart) oiChart.resize(); }, 50);
+    }
+  };
+});
+
+/* ===== 到期日选择 ===== */
+function renderExpiries() {
+  const bar = document.getElementById('expiry-bar');
+  const exps = P.expiries || [];
+  if (!exps.some(e => e.date === S.expiry)) S.expiry = P.defaultExpiry || (exps[0] && exps[0].date);
+  bar.innerHTML = exps.map(e =>
+    `<span class="chip ${e.date === S.expiry ? 'active' : ''}" data-d="${e.date}">` +
+    `${e.label}${e.days != null ? '(' + e.days + ')' : ''}</span>`
+  ).join('');
+  bar.querySelectorAll('.chip').forEach(c => {
+    c.onclick = () => { S.expiry = c.dataset.d; renderExpiries(); renderAll(); };
+  });
+}
+
+/* ===== 主入口 ===== */
+window.renderAnalysis = function(payload) {
+  P = payload;
+  S.ucode = (payload.underlying || {}).code;
+
+  const u = payload.underlying || {};
+  document.getElementById('meta').textContent = payload.meta || '';
+  const chip = document.getElementById('uprice');
+  if (u.price != null) {
+    chip.style.display = '';
+    chip.textContent = `${u.name || u.code} ${fmt(u.price, 3)} ${fmtPct(u.change_pct)}`;
+    chip.className = 'price-chip ' + cls(u.change_pct);
+  } else {
+    chip.style.display = 'none';
+  }
+
+  const empty = document.getElementById('empty');
+  if (!payload.expiries || !payload.expiries.length) {
+    empty.style.display = 'flex';
+    document.querySelectorAll('.panel').forEach(p => p.style.display = 'none');
+    return;
+  }
+  empty.style.display = 'none';
+  document.querySelectorAll('.panel').forEach(p => p.style.display = '');
+
+  renderExpiries();
+  renderAll();
+};
+
+function renderAll() {
+  renderSeller();
+  renderSmile();
+  renderOI();
+  renderSmileAll();
+  renderSurface();
+  renderTerm();
+}
+
+/* ===== 卖方指标 ===== */
+function renderSeller() {
+  const panel = document.getElementById('panel-seller');
+  if (!P || !P.seller || !S.expiry || !P.seller[S.expiry]) {
+    panel.style.display = 'none'; return;
+  }
+  panel.style.display = '';
+  const d = P.seller[S.expiry];
+
+  const hint = document.getElementById('seller-hint');
+  const exp = P.expiries && P.expiries.find(e => e.date === S.expiry);
+  hint.textContent = (exp ? exp.label + ' · ' : '') + '剩余' + (d.days || '--') + '天 · 平值档 ' + (d.atmStrike != null ? d.atmStrike.toFixed(3) : '--');
+
+  const cards = document.getElementById('seller-cards');
+  let html = '';
+
+  html += card('平值 IV', d.atmIV != null ? d.atmIV.toFixed(1) + '%' : '--', 'neutral', 'ATM Call/Put IV 均值');
+
+  let skewCls = 'neutral', skewNote = 'Put 25Δ IV − Call 25Δ IV';
+  if (d.skew25D != null) {
+    if (d.skew25D > 5) { skewCls = 'up'; skewNote += ' · 偏斜较大(恐慌)'; }
+    else if (d.skew25D > 2) { skewCls = 'warn'; skewNote += ' · 轻微偏斜'; }
+    else { skewCls = 'down'; skewNote += ' · 偏斜正常'; }
+  }
+  html += card('25Δ 偏斜', d.skew25D != null ? d.skew25D.toFixed(2) + '%' : '--', skewCls, skewNote);
+
+  let pcrCls = 'neutral', pcrNote = 'Put/Call 持仓量比';
+  if (d.pcrOI != null) {
+    if (d.pcrOI >= 1.5) { pcrCls = 'up'; pcrNote += ' · 极度看空信号'; }
+    else if (d.pcrOI >= 1.0) { pcrCls = 'warn'; pcrNote += ' · Put拥挤'; }
+    else if (d.pcrOI <= 0.5) { pcrCls = 'down'; pcrNote += ' · 极度看多信号'; }
+    else { pcrNote += ' · 正常'; }
+  }
+  html += card('PCR 持仓', d.pcrOI != null ? d.pcrOI.toFixed(3) : '--', pcrCls, pcrNote);
+
+  html += card('预期波动', d.expectedMove != null ? '±' + d.expectedMove.toFixed(2) + '%' : '--', 'warn', 'ATM跨式/标的价 · 到期前隐含涨跌');
+  html += card('Call 总持仓', d.totalCallOI != null ? fmtCompact(d.totalCallOI) : '--', 'down', '全月 Call 持仓量');
+  html += card('Put 总持仓', d.totalPutOI != null ? fmtCompact(d.totalPutOI) : '--', 'up', '全月 Put 持仓量');
+
+  cards.innerHTML = html;
+}
+
+function card(label, value, cls, note) {
+  return '<div class="s-card"><div class="s-label">' + label + '</div>' +
+    '<div class="s-value ' + (cls || '') + '">' + value + '</div>' +
+    '<div class="s-note">' + (note || '') + '</div></div>';
+}
+
+/* ===== 波动率微笑 ===== */
+let smileChart = null;
+
+function renderSmile() {
+  const panel = document.getElementById('panel-smile');
+  if (!P || !P.smile || !S.expiry || !P.smile[S.expiry]) {
+    panel.style.display = 'none'; return;
+  }
+  panel.style.display = '';
+  const data = P.smile[S.expiry];
+  const strikes = data.strikes || [];
+  const callIV = data.callIV || [];
+  const putIV = data.putIV || [];
+  if (strikes.length === 0) { panel.style.display = 'none'; return; }
+
+  const hint = document.getElementById('smile-hint');
+  const exp = P.expiries && P.expiries.find(e => e.date === S.expiry);
+  hint.textContent = exp ? `${exp.label} · ${exp.days}天 · IV vs 行权价` : 'IV vs 行权价';
+
+  const container = document.getElementById('smile-chart');
+  if (!smileChart) smileChart = echarts.init(container, null, { renderer: 'canvas' });
+
+  const u = P.underlying || {};
+  const spot = u.price;
+
+  smileChart.setOption({
+    backgroundColor: '#1e1e1e',
+    animation: false,
+    grid: { left: 52, right: 20, top: 30, bottom: 30 },
+    legend: { show: true, top: 4, right: 14, textStyle: { color: '#aaa', fontSize: 11 }, data: ['Call IV', 'Put IV'] },
+    tooltip: {
+      trigger: 'axis', backgroundColor: '#2d2d2d', borderColor: '#555',
+      textStyle: { color: '#eee', fontSize: 12 },
+      formatter: function(params) {
+        if (!params || !params.length) return '';
+        let html = '行权价 ' + params[0].axisValue + '<br/>';
+        params.forEach(p => { if (p.data != null) html += '<span style="color:' + p.color + '">●</span> ' + p.seriesName + ': ' + p.data.toFixed(2) + '%<br/>'; });
+        return html;
+      }
+    },
+    xAxis: { type: 'category', data: strikes.map(s => s.toFixed(3)), boundaryGap: false,
+             axisLine: { lineStyle: { color: '#555' } },
+             axisLabel: { color: '#999', fontSize: 10, interval: Math.max(1, Math.floor(strikes.length / 10)) } },
+    yAxis: { type: 'value', name: 'IV%', nameTextStyle: { color: '#888', fontSize: 10 },
+             splitLine: { lineStyle: { color: '#2c2c2c' } },
+             axisLabel: { color: '#999', fontSize: 10, formatter: '{value}%' } },
+    series: [
+      { name: 'Call IV', type: 'line', data: callIV, symbol: 'circle', symbolSize: 4, connectNulls: true,
+        lineStyle: { width: 2, color: '#26a69a' }, itemStyle: { color: '#26a69a' } },
+      { name: 'Put IV', type: 'line', data: putIV, symbol: 'circle', symbolSize: 4, connectNulls: true,
+        lineStyle: { width: 2, color: '#ef5350' }, itemStyle: { color: '#ef5350' } },
+      ...(spot > 0 ? [{ type: 'line', data: [], markLine: { symbol: 'none', silent: true,
+        data: [{ xAxis: spot.toFixed(3), lineStyle: { color: '#4fc3f7', type: 'dashed', width: 1 },
+                 label: { show: true, formatter: '现价', color: '#4fc3f7', fontSize: 10, position: 'insideEndTop' } }] } }] : []),
+    ],
+  }, true);
+  smileChart.resize();
+}
+
+/* ===== 持仓量分布 ===== */
+let oiChart = null;
+
+function renderOI() {
+  const panel = document.getElementById('panel-oi');
+  if (!P || !P.oi || !S.expiry || !P.oi[S.expiry]) {
+    panel.style.display = 'none'; return;
+  }
+  panel.style.display = '';
+  const data = P.oi[S.expiry];
+  const strikes = data.strikes || [];
+  const callOI = data.callOI || [];
+  const putOI = data.putOI || [];
+  if (strikes.length === 0 || (Math.max(...callOI) === 0 && Math.max(...putOI) === 0)) {
+    panel.style.display = 'none'; return;
+  }
+
+  const hint = document.getElementById('oi-hint');
+  const exp = P.expiries && P.expiries.find(e => e.date === S.expiry);
+  const parts = [];
+  if (data.callWall != null) parts.push('Call墙 ' + data.callWall.toFixed(3));
+  if (data.putWall != null) parts.push('Put墙 ' + data.putWall.toFixed(3));
+  if (data.maxPain != null) parts.push('MaxPain ' + data.maxPain.toFixed(3));
+  hint.textContent = (exp ? exp.label + ' · ' : '') + (parts.length ? parts.join(' · ') : '各行权价 OI');
+
+  const container = document.getElementById('oi-chart');
+  if (!oiChart) oiChart = echarts.init(container, null, { renderer: 'canvas' });
+
+  const u = P.underlying || {};
+  const spot = u.price;
+
+  const markLines = [];
+  if (spot > 0) markLines.push({ xAxis: spot.toFixed(3), lineStyle: { color: '#4fc3f7', type: 'dashed', width: 1.5 },
+    label: { show: true, formatter: '现价', color: '#4fc3f7', fontSize: 10, position: 'insideEndTop' } });
+  if (data.maxPain != null) markLines.push({ xAxis: data.maxPain.toFixed(3), lineStyle: { color: '#ff9800', type: 'solid', width: 1.5 },
+    label: { show: true, formatter: 'MaxPain', color: '#ff9800', fontSize: 10, position: 'insideStartTop' } });
+
+  const callMP = [], putMP = [];
+  if (data.callWall != null) {
+    const idx = strikes.findIndex(s => Math.abs(s - data.callWall) < 0.0001);
+    if (idx >= 0) callMP.push({ coord: [strikes[idx].toFixed(3), callOI[idx]], symbol: 'rect', symbolSize: [20, 20],
+      itemStyle: { color: 'transparent', borderColor: '#ffd700', borderWidth: 2 },
+      label: { show: true, formatter: 'Call墙', position: 'top', color: '#ffd700', fontSize: 10 } });
+  }
+  if (data.putWall != null) {
+    const idx = strikes.findIndex(s => Math.abs(s - data.putWall) < 0.0001);
+    if (idx >= 0) putMP.push({ coord: [strikes[idx].toFixed(3), putOI[idx]], symbol: 'rect', symbolSize: [20, 20],
+      itemStyle: { color: 'transparent', borderColor: '#ffd700', borderWidth: 2 },
+      label: { show: true, formatter: 'Put墙', position: 'top', color: '#ffd700', fontSize: 10 } });
+  }
+
+  oiChart.setOption({
+    backgroundColor: '#1e1e1e',
+    animation: false,
+    grid: { left: 58, right: 20, top: 30, bottom: 30 },
+    legend: { show: true, top: 4, right: 14, textStyle: { color: '#aaa', fontSize: 11 }, data: ['Call 持仓', 'Put 持仓'] },
+    tooltip: {
+      trigger: 'axis', backgroundColor: '#2d2d2d', borderColor: '#555',
+      textStyle: { color: '#eee', fontSize: 12 },
+      formatter: function(params) {
+        if (!params || !params.length) return '';
+        let html = '行权价 ' + params[0].axisValue + '<br/>';
+        params.forEach(p => { if (p.data != null) html += '<span style="color:' + p.color + '">●</span> ' + p.seriesName + ': ' + fmtCompact(p.data) + '<br/>'; });
+        return html;
+      }
+    },
+    xAxis: { type: 'category', data: strikes.map(s => s.toFixed(3)),
+             axisLine: { lineStyle: { color: '#555' } },
+             axisLabel: { color: '#999', fontSize: 10, interval: Math.max(1, Math.floor(strikes.length / 12)) } },
+    yAxis: { type: 'value', name: '持仓量', nameTextStyle: { color: '#888', fontSize: 10 },
+             splitLine: { lineStyle: { color: '#2c2c2c' } },
+             axisLabel: { color: '#999', fontSize: 10, formatter: function(v) { return fmtCompact(v); } } },
+    series: [
+      { name: 'Call 持仓', type: 'bar', data: callOI, itemStyle: { color: 'rgba(38,166,154,0.75)' },
+        barMaxWidth: 18, markPoint: { data: callMP }, markLine: { symbol: 'none', silent: true, data: markLines } },
+      { name: 'Put 持仓', type: 'bar', data: putOI, itemStyle: { color: 'rgba(239,83,80,0.75)' },
+        barMaxWidth: 18, markPoint: { data: putMP } },
+    ],
+  }, true);
+  oiChart.resize();
+}
+
+window.addEventListener('resize', () => { if (smileChart) smileChart.resize(); if (oiChart) oiChart.resize(); if (smileAllChart) smileAllChart.resize(); if (surfaceChart) surfaceChart.resize(); if (termChart) termChart.resize(); });
+
+/* ===================== 多到期月微笑对比 ===================== */
+let smileAllChart = null;
+const SMILE_COLORS = ['#26a69a', '#ef5350', '#ff9800', '#42a5f5', '#ab47bc', '#8d6e63', '#78909c'];
+
+function renderSmileAll() {
+  const panel = document.getElementById('panel-smile-all');
+  if (!P || !P.smile || !P.expiries || P.expiries.length < 2) {
+    panel.style.display = 'none'; return;
+  }
+  // 至少要有两个月有数据才显示对比
+  const validExpiries = P.expiries.filter(e => P.smile[e.date] && P.smile[e.date].strikes.length > 0);
+  if (validExpiries.length < 2) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+
+  const container = document.getElementById('smile-all-chart');
+  if (!smileAllChart) smileAllChart = echarts.init(container, null, { renderer: 'canvas' });
+
+  // 收集所有行权价的并集
+  const allStrikes = new Set();
+  validExpiries.forEach(e => { P.smile[e.date].strikes.forEach(s => allStrikes.add(s)); });
+  const strikes = Array.from(allStrikes).sort((a, b) => a - b);
+
+  const series = validExpiries.map((e, i) => {
+    const sm = P.smile[e.date];
+    // 计算 Call/Put 平均 IV
+    const ivMap = {};
+    sm.strikes.forEach((s, j) => {
+      const c = sm.callIV[j], p = sm.putIV[j];
+      if (c != null && p != null) ivMap[s] = (c + p) / 2;
+      else if (c != null) ivMap[s] = c;
+      else if (p != null) ivMap[s] = p;
+    });
+    const data = strikes.map(s => ivMap[s] != null ? ivMap[s] : null);
+    return {
+      name: e.label + '(' + (e.days || '') + '天)',
+      type: 'line', data: data, symbol: 'circle', symbolSize: 3, connectNulls: true,
+      lineStyle: { width: 2, color: SMILE_COLORS[i % SMILE_COLORS.length] },
+      itemStyle: { color: SMILE_COLORS[i % SMILE_COLORS.length] },
+    };
+  });
+
+  const u = P.underlying || {};
+  if (u.price > 0) {
+    series.push({ type: 'line', data: [], markLine: { symbol: 'none', silent: true,
+      data: [{ xAxis: u.price.toFixed(3), lineStyle: { color: '#4fc3f7', type: 'dashed', width: 1 },
+               label: { show: true, formatter: '现价', color: '#4fc3f7', fontSize: 10, position: 'insideEndTop' } }] } });
+  }
+
+  smileAllChart.setOption({
+    backgroundColor: '#1e1e1e', animation: false,
+    grid: { left: 52, right: 20, top: 40, bottom: 30 },
+    legend: { show: true, top: 4, right: 14, textStyle: { color: '#aaa', fontSize: 10 },
+              data: series.filter(s => s.name).map(s => s.name) },
+    tooltip: { trigger: 'axis', backgroundColor: '#2d2d2d', borderColor: '#555',
+      textStyle: { color: '#eee', fontSize: 12 },
+      formatter: function(params) {
+        if (!params || !params.length) return '';
+        let html = '行权价 ' + params[0].axisValue + '<br/>';
+        params.forEach(p => { if (p.data != null) html += '<span style="color:' + p.color + '">●</span> ' + p.seriesName + ': ' + p.data.toFixed(2) + '%<br/>'; });
+        return html;
+      } },
+    xAxis: { type: 'category', data: strikes.map(s => s.toFixed(3)), boundaryGap: false,
+             axisLine: { lineStyle: { color: '#555' } },
+             axisLabel: { color: '#999', fontSize: 10, interval: Math.max(1, Math.floor(strikes.length / 12)) } },
+    yAxis: { type: 'value', name: 'IV%', nameTextStyle: { color: '#888', fontSize: 10 },
+             splitLine: { lineStyle: { color: '#2c2c2c' } },
+             axisLabel: { color: '#999', fontSize: 10, formatter: '{value}%' } },
+    series: series,
+  }, true);
+  smileAllChart.resize();
+}
+
+/* ===================== 波动率曲面热力图 ===================== */
+let surfaceChart = null;
+
+function renderSurface() {
+  const panel = document.getElementById('panel-surface');
+  if (!P || !P.surface || !P.surface.strikes || !P.surface.rows || P.surface.rows.length === 0) {
+    panel.style.display = 'none'; return;
+  }
+  panel.style.display = '';
+  const sf = P.surface;
+  const strikes = sf.strikes.map(s => s.toFixed(3));
+  const expiries = sf.rows.map(r => r.expiry + '\n(' + (r.days || '?') + '天)');
+
+  // 构建热力图数据 [x, y, value]
+  const data = [];
+  let minIV = Infinity, maxIV = 0;
+  sf.rows.forEach((row, yi) => {
+    row.ivs.forEach((iv, xi) => {
+      if (iv != null) {
+        data.push([xi, yi, iv]);
+        if (iv < minIV) minIV = iv;
+        if (iv > maxIV) maxIV = iv;
+      }
+    });
+  });
+  if (data.length === 0) { panel.style.display = 'none'; return; }
+
+  const container = document.getElementById('surface-chart');
+  if (!surfaceChart) surfaceChart = echarts.init(container, null, { renderer: 'canvas' });
+
+  // ATM 档位标注（每月平值 = 最接近现价的行权价）
+  const u = P.underlying || {};
+  const spot = u.price;
+  let atmIdx = -1;
+  if (spot > 0) {
+    let minDist = Infinity;
+    sf.strikes.forEach((s, i) => { const d = Math.abs(s - spot); if (d < minDist) { minDist = d; atmIdx = i; } });
+  }
+
+  surfaceChart.setOption({
+    backgroundColor: '#1e1e1e', animation: false,
+    grid: { left: 80, right: 60, top: 20, bottom: 50 },
+    tooltip: {
+      formatter: function(p) {
+        if (p.data == null) return '';
+        const xi = p.data[0], yi = p.data[1], iv = p.data[2];
+        return '到期: ' + sf.rows[yi].expiry + '<br/>行权价: ' + sf.strikes[xi].toFixed(3) + '<br/>IV: ' + iv.toFixed(2) + '%';
+      }
+    },
+    xAxis: { type: 'category', data: strikes, splitArea: { show: false },
+             axisLine: { lineStyle: { color: '#555' } },
+             axisLabel: { color: '#999', fontSize: 9, interval: Math.max(1, Math.floor(strikes.length / 15)),
+                          rotate: strikes.length > 20 ? 45 : 0 } },
+    yAxis: { type: 'category', data: expiries, splitArea: { show: false },
+             axisLine: { lineStyle: { color: '#555' } },
+             axisLabel: { color: '#ccc', fontSize: 11 } },
+    visualMap: {
+      min: Math.floor(minIV), max: Math.ceil(maxIV), calculable: false,
+      orient: 'vertical', right: 6, top: 20, bottom: 50,
+      textStyle: { color: '#aaa', fontSize: 10 },
+      inRange: { color: ['#26a69a', '#66bb6a', '#ffee58', '#ffa726', '#ef5350'] },
+      formatter: function(v) { return v.toFixed(1) + '%'; }
+    },
+    series: [{
+      type: 'heatmap', data: data, emphasis: { itemStyle: { borderColor: '#fff', borderWidth: 1 } },
+      itemStyle: { borderColor: '#1e1e1e', borderWidth: 1 },
+      label: { show: strikes.length <= 15, color: '#222', fontSize: 9,
+               formatter: function(p) { return p.data[2] != null ? p.data[2].toFixed(1) : ''; } },
+      markPoint: atmIdx >= 0 ? { data: sf.rows.map((r, yi) => ({
+        coord: [atmIdx, yi], symbol: 'rect', symbolSize: [14, 14],
+        itemStyle: { color: 'transparent', borderColor: '#000', borderWidth: 2 }, label: { show: false }
+      })) } : undefined,
+    }],
+  }, true);
+  surfaceChart.resize();
+}
+
+/* ===================== 平值 IV 期限结构 ===================== */
+let termChart = null;
+
+function renderTerm() {
+  const panel = document.getElementById('panel-term');
+  if (!P || !P.ivTerm || P.ivTerm.length < 2) {
+    panel.style.display = 'none'; return;
+  }
+  panel.style.display = '';
+  const data = P.ivTerm;
+
+  const hint = document.getElementById('term-hint');
+  // 判断倒挂
+  const first = data[0].atmIV, last = data[data.length - 1].atmIV;
+  if (first > last) hint.textContent = '近月 > 远月 = 倒挂（市场为近期风险定价）';
+  else hint.textContent = '远月 > 近月 = 正常上斜';
+
+  const container = document.getElementById('term-chart');
+  if (!termChart) termChart = echarts.init(container, null, { renderer: 'canvas' });
+
+  termChart.setOption({
+    backgroundColor: '#1e1e1e', animation: false,
+    grid: { left: 52, right: 20, top: 30, bottom: 30 },
+    tooltip: { trigger: 'axis', backgroundColor: '#2d2d2d', borderColor: '#555',
+      textStyle: { color: '#eee', fontSize: 12 },
+      formatter: function(params) {
+        if (!params || !params.length) return '';
+        const p = params[0];
+        const d = data[p.dataIndex];
+        return d.expiry + '（' + d.days + '天）<br/>ATM IV: <b>' + d.atmIV.toFixed(2) + '%</b>';
+      } },
+    xAxis: { type: 'category', data: data.map(d => d.expiry), boundaryGap: false,
+             axisLine: { lineStyle: { color: '#555' } },
+             axisLabel: { color: '#999', fontSize: 11 } },
+    yAxis: { type: 'value', name: 'ATM IV%', nameTextStyle: { color: '#888', fontSize: 10 },
+             splitLine: { lineStyle: { color: '#2c2c2c' } },
+             axisLabel: { color: '#999', fontSize: 10, formatter: '{value}%' } },
+    series: [{
+      type: 'line', data: data.map(d => d.atmIV), symbol: 'circle', symbolSize: 8,
+      lineStyle: { width: 2.5, color: '#42a5f5' },
+      itemStyle: { color: '#42a5f5' },
+      areaStyle: { color: 'rgba(66,165,245,0.10)' },
+      label: { show: true, formatter: function(p) { return p.data.toFixed(1) + '%'; },
+               color: '#42a5f5', fontSize: 11, position: 'top' },
+    }],
+  }, true);
+  termChart.resize();
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>K 线图</title>
+<script src="qrc:/web/echarts.min.js"></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { touch-action: pan-x pan-y; }
+  body { background: #1e1e1e; color: #e0e0e0; font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+         display: flex; flex-direction: column; height: 100vh; overflow: hidden; touch-action: pan-x pan-y; }
+  #header { display: flex; align-items: center; gap: 16px; padding: 8px 14px; border-bottom: 1px solid #333; flex-wrap: wrap; }
+  #title { font-size: 16px; font-weight: bold; color: #ff9800; }
+  .btn { background: #3a3a3a; color: #fff; border: none; border-radius: 5px; padding: 5px 14px; cursor: pointer; font-size: 13px; }
+  .btn:hover { background: #ff9800; color: #1a1a1a; }
+  .hint { color: #888; font-size: 12px; }
+  #period-bar { display: flex; gap: 6px; padding: 6px 14px; border-bottom: 1px solid #333; }
+  .pbtn { background: #252525; color: #aaa; border: 1px solid #3a3a3a; border-radius: 5px;
+          padding: 4px 14px; cursor: pointer; font-size: 12px; }
+  .pbtn:hover { border-color: #ff9800; color: #fff; }
+  .pbtn.active { background: #ff9800; color: #1a1a1a; border-color: #ff9800; font-weight: bold; }
+  #main { flex: 1; display: flex; min-height: 0; }
+  #chart-wrap { flex: 1; min-width: 0; position: relative; }
+  #chart { width: 100%; height: 100%; }
+  #legend { position: absolute; top: 6px; left: 64px; z-index: 10; pointer-events: none;
+            font-size: 12px; color: #bbb; font-variant-numeric: tabular-nums; white-space: nowrap;
+            text-shadow: 0 1px 2px #000; }
+  #empty { flex: 1; display: none; align-items: center; justify-content: center; color: #666; font-size: 15px; }
+
+  /* 右侧信息面板 */
+  #side { flex: 0 0 172px; border-left: 1px solid #333; padding: 14px 14px; overflow-y: auto; }
+  #sq-price { font-size: 26px; font-weight: bold; font-variant-numeric: tabular-nums; }
+  #sq-chg { font-size: 13px; margin: 4px 0 12px; font-variant-numeric: tabular-nums; }
+  .sq-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #262626;
+            font-size: 12px; font-variant-numeric: tabular-nums; }
+  .sq-row .k { color: #888; }
+  .up { color: #ef5350; }
+  .down { color: #26a69a; }
+  .flat { color: #aaa; }
+</style>
+</head>
+<body>
+<div id="header">
+  <span id="title">K 线图</span>
+  <span class="hint">滚轮缩放 / 拖动平移 · 红涨绿跌 · 圆点为信号标记</span>
+  <span style="flex:1"></span>
+  <button class="btn" onclick="window.pyBridge && window.pyBridge.requestRefresh()">刷新</button>
+</div>
+<div id="period-bar" style="display:none"></div>
+<div id="main">
+  <div id="chart-wrap">
+    <div id="chart"></div>
+    <div id="legend"></div>
+  </div>
+  <div id="side"></div>
+  <div id="empty" style="display:none">暂无数据（点击行情看板或期权合约加载）</div>
+</div>
+<script>
+new QWebChannel(qt.webChannelTransport, function(channel) {
+  window.pyBridge = channel.objects.bridge;
+});
+const chart = echarts.init(document.getElementById('chart'), null, {renderer: 'canvas'});
+const UP_KEYS = ['resonance_long'];
+const DOWN_KEYS = ['resonance_short'];
+// 行情事件（不是交易建议，用小三角标注区别于买卖）
+const EVENT_UP = ['surge','rebound','gap_up','minute_surge'];
+const EVENT_DOWN = ['plunge','reversal','gap_down','minute_plunge'];
+const UP_COLOR = '#ef5350', DOWN_COLOR = '#26a69a';
+
+let BARS = [];      // 当前 bars（legend/tooltip 用）
+let MODE = 'candle';
+let DIGITS = 3;
+let PREV_CLOSE = null;  // 昨收/昨结（首根 bar 的涨跌基准）
+let QUOTE = null;   // 最新报价（鼠标移出后面板还原用）
+let ATM = null;     // ATM 认购/认沽快捷跳转信息
+
+function cls(v) { return v > 0 ? 'up' : v < 0 ? 'down' : 'flat'; }
+function signCls(v) { return v > 0 ? UP_COLOR : v < 0 ? DOWN_COLOR : '#aaa'; }
+function fmtP(v) { return (v == null || isNaN(v)) ? '--' : Number(v).toFixed(DIGITS); }
+function fmtCompact(v) {
+  if (v == null || isNaN(v)) return '--';
+  if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿';
+  if (v >= 1e4) return (v / 1e4).toFixed(1) + '万';
+  return '' + v;
+}
+function chgOf(i) {
+  // 第 i 根 bar 的涨跌额/涨跌幅（对前一根收盘；首根对昨收）
+  const b = BARS[i];
+  if (!b) return [null, null];
+  const base = i > 0 ? BARS[i-1].close : (PREV_CLOSE || null);
+  if (base == null || base <= 0) return [null, null];
+  const chg = b.close - base;
+  return [chg, chg / base * 100];
+}
+function chgStr(i) {
+  const [chg, pct] = chgOf(i);
+  if (chg == null) return '<span class="flat">--</span>';
+  const s = chg > 0 ? '+' : '';
+  return `<span class="${cls(chg)}">${s}${chg.toFixed(DIGITS)} ${s}${pct.toFixed(2)}%</span>`;
+}
+
+/* ---- 左上角 legend（股票软件风格，悬停随动） ---- */
+function renderLegend(i) {
+  const b = BARS[i];
+  const el = document.getElementById('legend');
+  if (!b) { el.innerHTML = ''; return; }
+  if (MODE === 'candle') {
+    el.innerHTML = `${b.label}&nbsp; 开 ${fmtP(b.open)} 高 ${fmtP(b.high)} 低 ${fmtP(b.low)} 收 ${fmtP(b.close)}` +
+                   `&nbsp; ${chgStr(i)} &nbsp;量 ${fmtCompact(b.volume)}`;
+  } else {
+    const avg = b.avg != null ? ` 均 ${fmtP(b.avg)}` : '';
+    el.innerHTML = `${b.label}&nbsp; 价 ${fmtP(b.close)}${avg}&nbsp; ${chgStr(i)} &nbsp;量 ${fmtCompact(b.volume)}`;
+  }
+}
+
+/* ---- 右侧信息面板（跟随悬停 bar，移出回最新报价） ---- */
+function renderAtmButtons() {
+  if (!ATM) return '';
+  const code = ATM.underlying || '';
+  if (!code) return '';
+  return `<div style="margin-top:12px"><button class="btn" style="width:100%;background:#ff9800;color:#1a1a1a;font-weight:bold;padding:6px" ` +
+         `onclick="window.pyBridge && window.pyBridge.viewOption('${code}')">查看期权 T 型</button></div>`;
+}
+
+function renderSide(q) {
+  const side = document.getElementById('side');
+  if (!q) { side.innerHTML = '<div style="color:#555;font-size:12px">暂无报价</div>'; return; }
+  const c = cls(q.change);
+  const sgn = q.change > 0 ? '+' : '';
+  const rows = [
+    ['今开', q.open], ['最高', q.high], ['最低', q.low], [q.prevCloseLabel || '昨收', q.prevClose],
+  ].filter(([, v]) => v != null)
+   .map(([k, v]) => `<div class="sq-row"><span class="k">${k}</span><span>${fmtP(v)}</span></div>`);
+  if (q.volume != null) rows.push(`<div class="sq-row"><span class="k">成交量</span><span>${fmtCompact(q.volume)}</span></div>`);
+  (q.extras || []).forEach(([k, v]) => rows.push(`<div class="sq-row"><span class="k">${k}</span><span>${v}</span></div>`));
+  side.innerHTML =
+    `<div id="sq-price" class="${c}">${fmtP(q.price)}</div>` +
+    `<div id="sq-chg" class="${c}">${q.change != null ? sgn + q.change.toFixed(DIGITS) : '--'} ` +
+    `${q.changePct != null ? sgn + q.changePct.toFixed(2) + '%' : ''}</div>` +
+    rows.join('') + renderAtmButtons();
+}
+
+function barSideData(i) {
+  // 把第 i 根 bar 组装成面板数据（结构同报价）
+  const b = BARS[i];
+  if (!b) return null;
+  const [chg, pct] = chgOf(i);
+  const extras = [];
+  if (b.avg != null) extras.push(['均价', fmtP(b.avg)]);
+  return {
+    price: b.close, change: chg, changePct: pct,
+    open: b.open, high: b.high, low: b.low,
+    prevClose: i > 0 ? BARS[i-1].close : PREV_CLOSE,
+    volume: b.volume, extras,
+  };
+}
+
+function buildOption(payload) {
+  const bars = payload.bars || [];
+  const mode = payload.mode || 'candle';
+  const signals = payload.signals || [];
+  if (!bars.length) return null;
+
+  const times = bars.map(b => b.label);
+  let series = [];
+
+  if (mode === 'candle') {
+    series.push({
+      name: 'K线', type: 'candlestick',
+      data: bars.map(b => [b.open, b.close, b.low, b.high]),
+      itemStyle: { color: UP_COLOR, color0: DOWN_COLOR, borderColor: UP_COLOR, borderColor0: DOWN_COLOR }
+    });
+    const closes = bars.map(b => b.close);
+    const maCalc = (n) => closes.map((_, i) => i < n-1 ? null : +(closes.slice(i-n+1, i+1).reduce((a,b)=>a+b,0)/n).toFixed(4));
+    const maDefs = [[5,'#ffffff'],[10,'#ffeb3b'],[20,'#9c27b0']];
+    maDefs.forEach(([n,color]) => {
+      if ((payload['ma'+n]) !== false) {
+        series.push({ name: 'MA'+n, type: 'line', data: maCalc(n), smooth: true, symbol: 'none',
+                      lineStyle: { width: 1, color }, z: 5 });
+      }
+    });
+  } else {
+    series.push({ name: '最新价', type: 'line', data: bars.map(b => b.close), symbol: 'none',
+                  lineStyle: { width: 1.5, color: '#ffffff' }, z: 5 });
+    if (bars.some(b => b.avg != null)) {
+      series.push({ name: '均价', type: 'line', data: bars.map(b => b.avg), symbol: 'none',
+                    lineStyle: { width: 1.2, color: '#ffeb3b' }, z: 4 });
+    }
+  }
+
+  // 信号标记（markPoint 挂在主 series 上）
+  // 建立信号索引：label → [{text, type}]，供 tooltip 显示
+  const sigMap = {};
+  const evUp = [], evDown = [], upMark = [], downMark = [];
+  signals.forEach(s => {
+    const idx = times.indexOf(s.label);
+    if (idx < 0) return;
+    const bar = bars[idx];
+    if (!sigMap[s.label]) sigMap[s.label] = [];
+    if (UP_KEYS.includes(s.key)) {
+      upMark.push({ coord: [s.label, bar.low], value: s.labelText });
+      sigMap[s.label].push({text: s.labelText, color: '#ff1744'});
+    } else if (DOWN_KEYS.includes(s.key)) {
+      downMark.push({ coord: [s.label, bar.high], value: s.labelText });
+      sigMap[s.label].push({text: s.labelText, color: '#00c853'});
+    } else if (EVENT_UP.includes(s.key)) {
+      evUp.push({ coord: [s.label, bar.low], value: s.labelText });
+      sigMap[s.label].push({text: s.labelText, color: '#ff9800'});
+    } else if (EVENT_DOWN.includes(s.key)) {
+      evDown.push({ coord: [s.label, bar.high], value: s.labelText });
+      sigMap[s.label].push({text: s.labelText, color: '#ff9800'});
+    }
+  });
+  // 保存到全局供 tooltip 使用
+  window._sigMap = sigMap;
+  const markPoint = {
+    data: [
+      ...upMark.map(d => ({ ...d, symbol: 'pin', symbolSize: 28, symbolOffset: [0, 8],
+                            itemStyle: { color: '#ff1744' },
+                            label: { show: true, formatter: '买', color: '#fff', fontSize: 10, fontWeight: 'bold' } })),
+      ...downMark.map(d => ({ ...d, symbol: 'pin', symbolSize: 28, symbolRotate: 180, symbolOffset: [0, -8],
+                              itemStyle: { color: '#00c853' },
+                              label: { show: true, formatter: '卖', color: '#fff', fontSize: 10, fontWeight: 'bold', offset: [0, -3] } })),
+      ...evUp.map(d => ({ ...d, symbol: 'triangle', symbolSize: 12, symbolOffset: [0, 14],
+                          itemStyle: { color: '#ff9800' }, label: { show: false } })),
+      ...evDown.map(d => ({ ...d, symbol: 'triangle', symbolSize: 12, symbolRotate: 180, symbolOffset: [0, -14],
+                            itemStyle: { color: '#ff9800' }, label: { show: false } })),
+    ],
+    tooltip: { show: true, formatter: p => p.data.value, backgroundColor: '#2d2d2d',
+               borderColor: '#555', textStyle: { color: '#eee' } },
+  };
+  series[0].markPoint = markPoint;
+
+  // 成交量：红涨绿跌（蜡烛模式跟开收，分时模式跟前一分钟收盘）
+  series.push({ name: '成交量', type: 'bar', xAxisIndex: 1, yAxisIndex: 1,
+                data: bars.map((b, i) => {
+                  let up;
+                  if (mode === 'candle') up = b.close >= b.open;
+                  else up = i > 0 ? b.close >= bars[i-1].close : b.close >= b.open;
+                  return { value: b.volume, itemStyle: { color: up ? UP_COLOR : DOWN_COLOR } };
+                }) });
+
+  // 均量线 MA5（成交量区域叠加，方便观察放量/缩量）
+  const vols = bars.map(b => b.volume || 0);
+  const volMa5 = vols.map((_, i) => {
+    if (i < 4) return null;
+    return Math.round(vols.slice(i - 4, i + 1).reduce((a, b) => a + b, 0) / 5);
+  });
+  series.push({ name: '均量', type: 'line', xAxisIndex: 1, yAxisIndex: 1,
+                data: volMa5, symbol: 'none', smooth: true,
+                lineStyle: { width: 1, color: '#ffeb3b' }, z: 5 });
+
+  // MACD（12/26/9）
+  const closes = bars.map(b => b.close);
+  const ema = (data, n) => {
+    const k = 2 / (n + 1);
+    const out = [data[0]];
+    for (let i = 1; i < data.length; i++) out.push(data[i] * k + out[i-1] * (1 - k));
+    return out;
+  };
+  const ema12 = ema(closes, 12);
+  const ema26 = ema(closes, 26);
+  const dif = ema12.map((v, i) => +(v - ema26[i]).toFixed(6));
+  const dea = ema(dif, 9).map(v => +v.toFixed(6));
+  const macdBar = dif.map((v, i) => +((v - dea[i]) * 2).toFixed(6));
+
+  series.push({ name: 'DIF', type: 'line', xAxisIndex: 2, yAxisIndex: 2,
+                data: dif, symbol: 'none', lineStyle: { width: 1, color: '#ffffff' }, z: 5 });
+  series.push({ name: 'DEA', type: 'line', xAxisIndex: 2, yAxisIndex: 2,
+                data: dea, symbol: 'none', lineStyle: { width: 1, color: '#ffeb3b' }, z: 5 });
+  series.push({ name: 'MACD', type: 'bar', xAxisIndex: 2, yAxisIndex: 2,
+                data: macdBar.map(v => ({ value: v, itemStyle: { color: v >= 0 ? UP_COLOR : DOWN_COLOR } })) });
+
+  return {
+    backgroundColor: '#1e1e1e',
+    animation: false,
+    tooltip: {
+      trigger: 'axis', axisPointer: { type: 'cross' }, backgroundColor: '#2d2d2d',
+      borderColor: '#555', textStyle: { color: '#eee', fontSize: 12 },
+      formatter: function(params) {
+        // 股票软件风格：OHLC + 涨跌额/涨跌幅 + 成交量
+        const i = params.length ? params[0].dataIndex : -1;
+        const b = BARS[i];
+        if (!b) return '';
+        const [chg, pct] = chgOf(i);
+        const sgn = chg > 0 ? '+' : '';
+        const chgTxt = chg == null ? '--' : `${sgn}${chg.toFixed(DIGITS)} (${sgn}${pct.toFixed(2)}%)`;
+        let html;
+        if (MODE === 'candle') {
+          html = `${b.label}<br/>开 ${fmtP(b.open)}&nbsp;&nbsp;高 ${fmtP(b.high)}<br/>` +
+                 `低 ${fmtP(b.low)}&nbsp;&nbsp;收 ${fmtP(b.close)}<br/>` +
+                 `涨跌 <span style="color:${signCls(chg)}">${chgTxt}</span><br/>成交量 ${fmtCompact(b.volume)}`;
+        } else {
+          const avg = b.avg != null ? `&nbsp;&nbsp;均价 ${fmtP(b.avg)}` : '';
+          html = `${b.label}<br/>最新 ${fmtP(b.close)}${avg}<br/>` +
+                 `涨跌 <span style="color:${signCls(chg)}">${chgTxt}</span><br/>成交量 ${fmtCompact(b.volume)}`;
+        }
+        (params || []).forEach(p => {
+          if (p.seriesName && p.seriesName.startsWith('MA') && p.value != null)
+            html += `<br/>${p.seriesName} ${fmtP(p.value)}`;
+        });
+        // 该 bar 有信号时追加显示
+        const sigs = window._sigMap && window._sigMap[b.label];
+        if (sigs && sigs.length) {
+          sigs.forEach(s => { html += `<br/><span style="color:${s.color}">⚡ ${s.text}</span>`; });
+        }
+        return html;
+      }
+    },
+    axisPointer: { link: [{xAxisIndex: 'all'}] },
+    grid: [
+      { left: 60, right: 20, top: 30, height: '42%' },
+      { left: 60, right: 20, top: '56%', height: '14%' },
+      { left: 60, right: 20, top: '74%', height: '14%' }
+    ],
+    xAxis: [
+      { type: 'category', data: times, gridIndex: 0, boundaryGap: true,
+        axisLine: { lineStyle: { color: '#555' } }, axisLabel: { color: '#aaa' } },
+      { type: 'category', data: times, gridIndex: 1, boundaryGap: true,
+        axisLine: { lineStyle: { color: '#555' } }, axisLabel: { show: false } },
+      { type: 'category', data: times, gridIndex: 2, boundaryGap: true,
+        axisLine: { lineStyle: { color: '#555' } }, axisLabel: { show: false } }
+    ],
+    yAxis: [
+      { scale: true, gridIndex: 0, splitLine: { lineStyle: { color: '#333' } },
+        axisLabel: { color: '#aaa' } },
+      { scale: true, gridIndex: 1, splitNumber: 2, splitLine: { show: false },
+        axisLabel: { color: '#aaa' } },
+      { scale: true, gridIndex: 2, splitNumber: 2, splitLine: { show: false },
+        axisLabel: { color: '#aaa' } }
+    ],
+    dataZoom: [
+      { type: 'inside', xAxisIndex: [0,1,2], start: Math.max(0, 100 - 6000/times.length), end: 100 },
+      { type: 'slider', xAxisIndex: [0,1,2], bottom: 6, height: 18, borderColor: '#444',
+        backgroundColor: '#252525', fillerColor: 'rgba(255,152,0,0.15)',
+        handleStyle: { color: '#ff9800' }, textStyle: { color: '#888' } }
+    ],
+    series
+  };
+}
+
+// 悬停联动左上角 legend + 右侧面板（股票软件风格）
+chart.on('updateAxisPointer', function(ev) {
+  // 必须用 dataIndex（全量数据绝对序号）；dataIndexInside 是缩放窗口内序号，
+  // 默认缩放只显示末尾一段，用它会映射到几百根之前的 bar
+  const i = (ev.dataIndex != null) ? ev.dataIndex : ev.dataIndexInside;
+  if (i != null && BARS[i]) {
+    renderLegend(i);
+    renderSide(barSideData(i));
+  }
+});
+chart.getZr().on('globalout', function() {
+  renderLegend(BARS.length - 1);
+  renderSide(QUOTE);
+});
+
+window.updateChart = function(payload) {
+  document.getElementById('title').textContent = payload.title || 'K 线图';
+
+  // 周期切换按钮（加载中也渲染，允许先切周期）
+  const bar = document.getElementById('period-bar');
+  const periods = payload.periods || [];
+  bar.style.display = periods.length ? 'flex' : 'none';
+  bar.innerHTML = periods.map(p =>
+    `<button class="pbtn ${p === payload.period ? 'active' : ''}" data-p="${p}">${p}</button>`
+  ).join('');
+  bar.querySelectorAll('.pbtn').forEach(b => {
+    b.onclick = () => { if (window.pyBridge) window.pyBridge.requestPeriod(b.dataset.p); };
+  });
+
+  const empty = document.getElementById('empty');
+  // 期权后台取数中：只显示加载提示，不动旧图与侧栏
+  if (payload.loading) {
+    document.getElementById('chart').style.display = 'none';
+    empty.textContent = '加载中...';
+    empty.style.display = 'flex';
+    return;
+  }
+  empty.textContent = '暂无数据（点击行情看板或期权合约加载）';
+
+  BARS = payload.bars || [];
+  MODE = payload.mode || 'candle';
+  DIGITS = payload.digits || 3;
+  PREV_CLOSE = (payload.quote && payload.quote.prevClose) || null;
+  QUOTE = payload.quote || null;
+  ATM = payload.atm || null;
+
+  renderSide(payload.quote || null);
+
+  const opt = buildOption(payload);
+  document.getElementById('chart').style.display = opt ? 'block' : 'none';
+  empty.style.display = opt ? 'none' : 'flex';
+  if (opt) {
+    // 保留用户当前的缩放窗口（定时自动刷新不重置视图）
+    try {
+      const cur = chart.getOption();
+      if (cur && cur.dataZoom && cur.dataZoom.length) {
+        const s = cur.dataZoom[0].start, e = cur.dataZoom[0].end;
+        opt.dataZoom.forEach(dz => { dz.start = s; dz.end = e; });
+      }
+    } catch (err) { /* 首次渲染无旧 option */ }
+    chart.setOption(opt, true);
+    chart.resize();  // 异步加载后容器从 display:none 恢复，需要通知 echarts 重新计算尺寸
+    renderLegend(BARS.length - 1);  // 默认显示最新一根
+  } else {
+    renderLegend(-1);
+  }
+};
+window.addEventListener('resize', () => chart.resize());
+// 禁止页面级缩放（macOS 触摸板双指捏合会产生 ctrlKey+wheel）
+document.addEventListener('wheel', function(e) { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+</script>
+</body>
+</html>
