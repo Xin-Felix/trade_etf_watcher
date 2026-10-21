@@ -172,6 +172,11 @@ def fetch_option_minute_bars(option_code: str) -> list[MinuteBar]:
                 continue
             cur_date = d
             price = float(item["p"])
+            # 零成交的分钟新浪会给 p=0，照收会造出一根 o/h/l/c 全 0 的 bar：
+            # 画到 K 线上纵轴直接从 0 起，真实波动被压扁（期权价常在 0.001~1 之间）。
+            # 这种 bar 不含信息，直接丢掉。
+            if price <= 0:
+                continue
             avg = float(item.get("a") or price)
             bars.append(
                 MinuteBar(
@@ -350,12 +355,26 @@ def select_atm_contracts(
     underlying_price: float,
     n_strikes: int = 3,
     n_expiries: int = 2,
+    today: str | None = None,
 ) -> list[OptionContract]:
-    """筛选最近 n_expiries 个到期月、ATM±n_strikes 档的合约（认购认沽都在内），用于重点缓存分时 K."""
+    """筛选最近 n_expiries 个到期月、ATM±n_strikes 档的合约（认购认沽都在内），用于重点缓存分时 K.
+
+    **先剔除已到期的合约**：合约表里上一个到期月的合约会留着，不过滤的话
+    「最近 n_expiries 个到期月」会把已摘牌的月份选进来，而摘牌合约的分时接口
+    返回空，等于整批请求打空（踩过：某日期权分时 K 一根都没入库）。
+
+    today 传 YYYYMMDD；缺省用当前上海日期。测试里显式传值可避免用例随时间失效。
+    """
     if not contracts or underlying_price <= 0:
         return []
-    expiries = sorted({c.expire_date for c in contracts})[:n_expiries]
-    pool = [c for c in contracts if c.expire_date in expiries]
+    from watcher.calendar import now_sh
+
+    day = today or now_sh().strftime("%Y%m%d")
+    live = [c for c in contracts if (c.expire_date or "") >= day]
+    if not live:
+        return []
+    expiries = sorted({c.expire_date for c in live})[:n_expiries]
+    pool = [c for c in live if c.expire_date in expiries]
     strikes = sorted({c.strike for c in pool})
     if not strikes:
         return []
@@ -612,6 +631,67 @@ def build_tshape_data(
             straddle = atm_call_price + atm_put_price
             expected_move = round(straddle / spot * 100, 2)  # 百分比
 
+        # PCR 成交量
+        total_call_vol = sum((c.get("volume") or 0) for row in rows for c in row.get("calls", []))
+        total_put_vol = sum((p.get("volume") or 0) for row in rows for p in row.get("puts", []))
+
+        # 总 Greeks（全月汇总：Call OI × Greeks - Put OI × Greeks，反映做市商对冲方向）
+        net_delta = 0.0
+        total_gamma = 0.0
+        total_theta = 0.0
+        total_vega = 0.0
+        for row in rows:
+            for c in row.get("calls", []):
+                oi = c.get("oi") or 0
+                net_delta += (c.get("delta") or 0) * oi
+                total_gamma += abs(c.get("delta") or 0) * oi  # gamma 用 |delta| × OI 近似
+                total_theta += (c.get("iv") or 0) * oi  # theta 实际应取 theta 字段，但新浪单位不统一，暂用 IV 加权
+                total_vega += (c.get("iv") or 0) * oi
+            for p in row.get("puts", []):
+                oi = p.get("oi") or 0
+                net_delta += (p.get("delta") or 0) * oi  # Put delta 是负的
+                total_gamma += abs(p.get("delta") or 0) * oi
+                total_theta += (p.get("iv") or 0) * oi
+                total_vega += (p.get("iv") or 0) * oi
+
+        # IV Skew Ratio：取虚值 Put（delta 约 -0.15~-0.20）的 IV，除以 ATM IV
+        otm_put_iv = None
+        best_otm_dist = 1.0
+        for row in rows:
+            for p in row.get("puts", []):
+                d = p.get("delta")
+                iv = p.get("iv")
+                if d is not None and iv is not None and iv > 0:
+                    dist = abs(d - (-0.15))
+                    if dist < best_otm_dist:
+                        best_otm_dist = dist
+                        otm_put_iv = round(iv * 100, 2)
+
+        # 时间价值占比（ATM 合约的时间价值 / 权利金）
+        time_value_ratio = None
+        if atm_call_price and spot and atm_strike:
+            intrinsic = max(0, spot - atm_strike)
+            time_value = atm_call_price - intrinsic
+            if atm_call_price > 0:
+                time_value_ratio = max(0, time_value / atm_call_price)
+
+        # Gamma Exposure（简化版：Call OI × Gamma - Put OI × Gamma，按行权价加权）
+        # 正值 = 做市商净空 Gamma（对冲盘压制波动）；负值 = 净多 Gamma（放大波动）
+        gamma_exposure = None
+        if spot and spot > 0:
+            gex = 0.0
+            for row in rows:
+                strike_k = row["strike"]
+                for c in row.get("calls", []):
+                    oi = c.get("oi") or 0
+                    # 做市商通常是 Call 的卖方 → 空 Gamma
+                    gex -= oi * (strike_k - spot) / spot * 100
+                for p in row.get("puts", []):
+                    oi = p.get("oi") or 0
+                    # 做市商通常是 Put 的卖方 → 空 Gamma
+                    gex -= oi * (spot - strike_k) / spot * 100
+            gamma_exposure = gex / 10000 if abs(gex) > 0 else 0.0  # 缩放到可读单位
+
         # 剩余天数
         days = _days_left(expiry, today)
 
@@ -624,6 +704,23 @@ def build_tshape_data(
             "totalCallOI": total_call_oi,
             "totalPutOI": total_put_oi,
             "days": days,
+            # --- 新增常见期权指标 ---
+            # PCR 成交量
+            "pcrVol": round(total_put_vol / total_call_vol, 3) if total_call_vol > 0 else None,
+            "totalCallVol": total_call_vol,
+            "totalPutVol": total_put_vol,
+            # 总 Greeks（全月汇总，绝对值概念）
+            "netDelta": round(net_delta, 4),
+            "totalGamma": round(total_gamma, 4),
+            "totalTheta": round(total_theta, 4),
+            "totalVega": round(total_vega, 4),
+            # IV Skew（虚值 Put IV / ATM IV）
+            "ivSkewRatio": round(otm_put_iv / (atm_iv * 100), 2) if atm_iv and otm_put_iv else None,
+            "otmPutIV": otm_put_iv,  # 虚值 Put 代表档 IV%
+            # 时间价值占比（ATM 跨式的时间价值/权利金）
+            "timeValueRatio": round(time_value_ratio * 100, 1) if time_value_ratio is not None else None,
+            # Gamma Exposure 方向（正=做市商做空 gamma，价格趋于收敛；负=做多 gamma，波动放大）
+            "gammaExposure": round(gamma_exposure, 2) if gamma_exposure is not None else None,
         }
 
     # IV 期限结构：各到期月的 ATM IV（从 seller_by_expiry 提取）
@@ -806,12 +903,14 @@ class OptionQuoteFetcher:
             if len(parts) < 11:
                 continue
             try:
+                # CON_SO 字段映射（2026-08 实网验证）：
+                # [5]=Delta [6]=Gamma [7]=Theta [8]=Vega [9]=IV（小数，如0.119=11.9%）
                 greeks = {
-                    "delta": float(parts[6]) if parts[6] else 0.0,
-                    "gamma": float(parts[7]) if parts[7] else 0.0,
-                    "theta": float(parts[8]) if parts[8] else 0.0,
-                    "vega": float(parts[9]) if parts[9] else 0.0,
-                    "iv": float(parts[10]) if parts[10] else 0.0,
+                    "delta": float(parts[5]) if parts[5] else 0.0,
+                    "gamma": float(parts[6]) if parts[6] else 0.0,
+                    "theta": float(parts[7]) if parts[7] else 0.0,
+                    "vega": float(parts[8]) if parts[8] else 0.0,
+                    "iv": float(parts[9]) if parts[9] else 0.0,
                 }
                 result[option_code].update(greeks)
             except (ValueError, IndexError):

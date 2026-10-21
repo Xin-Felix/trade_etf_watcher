@@ -1,0 +1,26 @@
+{
+  "name": "rjdj-frontend",
+  "version": "0.1.0",
+  "description": "日进斗金 桌面端前端（Vue 3 + Vite，构建为单文件嵌入 QWebEngineView）",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "build:fast": "vite build",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "echarts": "6.1.0",
+    "pinia": "4.0.3",
+    "vue": "3.5.42"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.1",
+    "@vitejs/plugin-vue": "6.0.8",
+    "typescript": "5.9.3",
+    "vite": "8.2.2",
+    "vite-plugin-singlefile": "2.3.3",
+    "vue-tsc": "3.3.11"
+  }
+}

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QObject, Qt, QRunnable, QThreadPool, QTimer, Slot
+from PySide6.QtCore import QObject, QPoint, Qt, QRunnable, QThreadPool, QTimer, Slot
 from PySide6.QtCore import Signal as QtSignal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 from watcher.bars import aggregate_minute_bars
 from watcher.calendar import is_polling_hours, parse_quote_time, signal_display_time, today_str
 from watcher.config import Config
-from watcher.gui.web.webtab import AnalysisTab, ChartTab, TableTab, TShapeTab
+from watcher.gui.web.webtab import VueTab
 from watcher.models import AppState, MinuteBar, Quote, Signal
 from watcher.notify.desktop import Notifier
 from watcher.option_meta import (
@@ -75,6 +75,25 @@ class _ChartJob(QRunnable):
         self._signals.finished.emit(self._seq, payload, quote)
 
 
+class _ChartWindow(QWidget):
+    """K 线图的顶层窗口.
+
+    只为了在关闭时通知主窗口一声（把焦点交还回去），别的行为跟裸 QWidget 一样。
+    刻意不设 parent —— 有 parent 就不是独立窗口了，不能单独摆放/最小化。
+    也刻意不设 WA_DeleteOnClose：关掉只是隐藏，里面的 QWebEngineView 要复用，
+    销毁重建既慢又容易踩 WebEngine 的 profile 生命周期问题。
+    """
+
+    def __init__(self, owner: MainWindow):
+        super().__init__()
+        self._owner = owner
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        super().closeEvent(event)
+        if event.isAccepted():
+            self._owner._on_chart_window_closed()
+
+
 class MainWindow(QWidget):
     def __init__(self, cfg: Config, store: StateStore, watcher: WatcherLoop, tray):
         super().__init__()
@@ -117,10 +136,15 @@ class MainWindow(QWidget):
         self._chart_job_signals.ai_finished.connect(self._deliver_ai_result)
         self._chart_seq = 0
         self._chart_inflight = 0
+        # 点 K 线买卖点跳 T 型页时要带的方向（'call'/'put'），渲染一次即清空
+        self._pending_tshape_filter = ""
 
         if self.cfg.watch_codes():
+            # 只记下默认标的，不弹窗也不取数：K 线是独立窗口，
+            # 等用户点标的时 _load_chart 才会打开并刷新。
             first_code = self.cfg.watch_codes()[0]
-            self._load_chart(first_code, self.cfg.name_for(first_code))
+            self._chart_code = first_code
+            self._chart_name = self.cfg.name_for(first_code)
 
     def _apply_styles(self) -> None:
         self.setStyleSheet("""
@@ -181,17 +205,12 @@ class MainWindow(QWidget):
 
         self.tabs = QTabWidget()
 
-        self.quote_tab = TableTab()
+        # 行情看板已迁到 Vue（frontend/src/views/QuotesView.vue）：
+        # 分组、涨跌计算、折叠、文案都在前端，这里只推原始数据。
+        self.quote_tab = VueTab(route="quotes")
         self.quote_tab.row_clicked.connect(self._on_quote_row_clicked)
         self.quote_tab.alert_toggled.connect(self._on_alert_toggled)
         self.tabs.addTab(self.quote_tab, "行情看板")
-
-        self.chart_tab = ChartTab()
-        self.chart_tab.set_refresh_handler(self._refresh_chart)
-        self.chart_tab.period_requested.connect(self._on_chart_period)
-        self.chart_tab.view_option_requested.connect(self._on_view_option)
-        self._chart_period = "1分"
-        self.tabs.addTab(self.chart_tab, "K 线图")
 
         self.options_tab = self._build_options_tab()
         self.tabs.addTab(self.options_tab, "期权T型")
@@ -199,10 +218,11 @@ class MainWindow(QWidget):
         self.analysis_tab = self._build_analysis_tab()
         self.tabs.addTab(self.analysis_tab, "期权分析")
 
-        # 页签全部建好后才连接，避免构建期触发 _on_tab_changed
-        self.tabs.currentChanged.connect(self._on_tab_changed)
-
         layout.addWidget(self.tabs)
+
+        # K 线图不占页签：它总是从看板/期权表点进来的，常驻一个空页签没意义。
+        # 放进独立窗口，点标的时弹出，可以和主窗口并排看。
+        self._build_chart_window()
 
         self.footer = QLabel("数据源: - | -")
         layout.addWidget(self.footer)
@@ -224,10 +244,12 @@ class MainWindow(QWidget):
         left_widget.setLayout(left)
         left_widget.setMaximumWidth(220)
 
-        self.option_table = TShapeTab()
+        # 期权 T 型已迁到 Vue（frontend/src/views/TshapeView.vue）。
+        # AI 推荐入口没有搬过去（用不上），所以不连 ai_strategy_requested；
+        # Python 侧的 AI 代码还留着，老 tshape.html 回退时仍可用。
+        self.option_table = VueTab(route="tshape")
         self.option_table.row_clicked.connect(self._on_option_row_clicked)
         self.option_table.strategy_requested.connect(self._on_strategy_requested)
-        self.option_table.ai_strategy_requested.connect(self._on_ai_strategy_requested)
 
         splitter = QSplitter()
         splitter.addWidget(left_widget)
@@ -253,7 +275,9 @@ class MainWindow(QWidget):
         left_widget.setLayout(left)
         left_widget.setMaximumWidth(220)
 
-        self.analysis_view = AnalysisTab()
+        # 期权分析页已迁到 Vue（frontend/src/views/AnalysisView.vue）：
+        # payload 仍是 build_tshape_data 的产物，契约没变。
+        self.analysis_view = VueTab(route="analysis")
 
         splitter = QSplitter()
         splitter.addWidget(left_widget)
@@ -276,40 +300,88 @@ class MainWindow(QWidget):
         if quotes:
             self._on_quotes_updated(quotes)
 
-    def _on_quotes_updated(self, quotes: dict[str, Quote]) -> None:
-        alert_codes = self.store.get_alert_codes()
-        rows = []
-        for code, q in quotes.items():
-            # 提醒状态：alert_codes 非空时按集合判断；空集=全部提醒
-            alert_on = (code in alert_codes) if alert_codes else True
-            rows.append({
-                "code": code,
-                "_name": q.name,
-                "name": q.name,
-                "price": q.price,
-                "change": round(q.change_pct * 100, 2) if q.prev_close > 0 else None,
-                "open": q.open,
-                "high": q.high,
-                "low": q.low,
-                "source": q.source,
-                "alert": alert_on,
-            })
-        self.quote_tab.render({
-            "title": "行情看板",
-            "meta": f"{len(rows)} 个标的 · 点击行查看 K 线",
-            "columns": [
-                {"key": "alert", "title": "提醒", "type": "toggle"},
-                {"key": "code", "title": "代码"},
-                {"key": "name", "title": "名称"},
-                {"key": "price", "title": "最新价", "type": "num", "digits": 3},
-                {"key": "change", "title": "涨跌幅", "type": "pct"},
-                {"key": "open", "title": "今开", "type": "num", "digits": 3},
-                {"key": "high", "title": "最高", "type": "num", "digits": 3},
-                {"key": "low", "title": "最低", "type": "num", "digits": 3},
+    def _build_quotes_payload(self, quotes: dict[str, Quote]) -> dict:
+        """行情看板 payload（新契约）：只发事实，展示怎么组织交给前端.
+
+        这里不算涨跌幅、不分组、不拼文案 —— 那些是视图决策，放前端才能
+        改样式不动 Python。Python 只负责它独有的东西：配置、DB 里的提醒
+        偏好和今日信号。
+
+        约定：alertCodes 为空 = 全部提醒（沿用 state_meta 的语义）。
+        """
+        # 按配置顺序发，保证前端「其他」组和整体顺序稳定
+        # （quotes 的 dict 顺序取决于 FetchChain 返回顺序，不可靠）
+        order = self.cfg.all_quote_codes()
+        known = set(order)
+        ordered = [quotes[c] for c in order if c in quotes]
+        ordered += [q for c, q in quotes.items() if c not in known]
+
+        return {
+            "quotes": [
+                {
+                    "code": q.code,
+                    "name": q.name,
+                    "price": q.price,
+                    "open": q.open,
+                    "prevClose": q.prev_close,
+                    "volume": q.volume,
+                    "ts": q.ts,
+                    "source": q.source,
+                }
+                for q in ordered
             ],
-            "rowKey": "code",
-            "rows": rows,
-        })
+            "indices": [{"code": i.code, "name": i.name} for i in self.cfg.indices],
+            "indexMap": dict(self.cfg.index_map),
+            "alertCodes": sorted(self.store.get_alert_codes()),
+            "signals": self._latest_trade_signals(),
+            "source": next((q.source for q in ordered if q.source), ""),
+        }
+
+    # 看板列定义（指数行的小数位由行内 _digits 覆盖）
+    def _latest_trade_signals(self) -> dict[str, dict]:
+        """今日每个标的、每个周期的最新一条买卖点.
+
+        返回 {code: {"1m": {...}|缺, "5m": {...}|缺, "15m": {...}|缺}}，
+        每档是 {side, time, label}。看板据此分列展示，用户能一眼对比
+        某标的在 1/5/15 分上各自的最新买卖点（解决「K 线图上有、列表没有」）。
+
+        DB 里 signal_key 形如 `resonance_long_5m_1435`：方向前缀 + 周期标签 + 时间。
+        get_today_signals_with_ts 按 created_at DESC 返回，故每 (code,周期) 第一条即最新。
+        兼容旧数据：没有 `_Nm_` 周期标签的老信号归到 5m 档（那时只检测 5 分）。
+        """
+        import re
+
+        out: dict[str, dict] = {}
+        try:
+            rows = self.store.get_today_signals_with_ts(today_str())
+        except Exception:  # noqa: BLE001
+            return out
+        for r in rows:
+            code = r.get("code") or ""
+            key = r.get("signal_key") or ""
+            if not code:
+                continue
+            if key.startswith("resonance_long"):
+                side = "buy"
+            elif key.startswith("resonance_short"):
+                side = "sell"
+            else:
+                continue
+            m = re.search(r"_(\d+)m_", key)
+            period = f"{m.group(1)}m" if m else "5m"  # 老数据没标签 → 归 5m
+            slot = out.setdefault(code, {})
+            if period in slot:
+                continue  # 已有更新的（rows 已按时间倒序）
+            t = signal_display_time(r.get("ts") or "", r.get("created_at") or "")
+            slot[period] = {
+                "side": side,
+                "time": t[:5] if len(t) >= 5 else t,   # HH:MM:SS -> HH:MM
+                "label": r.get("label") or "",
+            }
+        return out
+
+    def _on_quotes_updated(self, quotes: dict[str, Quote]) -> None:
+        self.quote_tab.render_quotes(self._build_quotes_payload(quotes))
         # T 型报价页：如果当前选中标的的 ETF 价格有更新，刷新 T 型页的现价
         current = self.option_underlying_list.currentItem()
         if current:
@@ -319,42 +391,110 @@ class MainWindow(QWidget):
 
     def _on_quote_row_clicked(self, code: str, name: str) -> None:
         self._load_chart(code, name)
-        self.tabs.setCurrentIndex(1)
 
     def _on_alert_toggled(self, code: str) -> None:
         """行情看板提醒开关切换."""
         self.store.toggle_alert(code)
 
-    # ---------- K 线图 ----------
+    # ---------- K 线图（独立窗口） ----------
 
     _CHART_PERIODS = ["分时", "1分", "5分", "15分", "30分", "60分", "日K"]
+
+    def _build_chart_window(self) -> None:
+        """K 线图窗口。不设 parent 才是真正的顶层窗口（能独立摆放/最小化）。"""
+        self.chart_tab = VueTab(route="chart")
+        self.chart_tab.refresh_requested.connect(self._refresh_chart)
+        self.chart_tab.period_requested.connect(self._on_chart_period)
+        self.chart_tab.view_option_requested.connect(self._on_view_option)
+        self._chart_period = "1分"
+
+        self.chart_window = _ChartWindow(self)
+        self.chart_window.setWindowTitle("K 线图")
+        self.chart_window.resize(1200, 820)
+        lay = QVBoxLayout(self.chart_window)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.chart_tab)
+
+    def _on_chart_window_closed(self) -> None:
+        """K 线窗口被关掉后，把焦点交还主窗口.
+
+        macOS 上关掉当前活动窗口后，主窗口虽然还看得见却不是活动窗口，
+        这时点它里面的内容，第一下只会用来激活窗口、不会传给网页视图，
+        表现就是「点了没反应」。这里主动激活一次，省掉那一次空点击。
+        """
+        if not self.isVisible():
+            return  # 主窗口已收进托盘，不要把它拽出来
+        self.raise_()
+        self.activateWindow()
+
+    def _show_chart_window(self, title: str = "") -> None:
+        w = self.chart_window
+        if title:
+            w.setWindowTitle(f"K 线图 · {title}")
+        # 最小化状态下 show() 不还原（窗口留在 Dock 里），必须走 showNormal
+        if w.isMinimized():
+            w.showNormal()
+        else:
+            w.show()
+        self._ensure_on_screen(w)
+        w.raise_()
+        w.activateWindow()
+
+    @staticmethod
+    def _ensure_on_screen(w: QWidget) -> None:
+        """窗口跑到当前不存在的屏幕上时搬回主屏中间.
+
+        外接屏拔掉后，之前记住的位置会落在不可见区域，
+        重新 show() 出来是看不到的，同样表现为「点了没反应」。
+        """
+        from PySide6.QtGui import QGuiApplication
+
+        geo = w.frameGeometry()
+        if any(s.availableGeometry().intersects(geo) for s in QGuiApplication.screens()):
+            return
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        w.move(avail.center() - QPoint(w.width() // 2, w.height() // 2))
 
     def _load_chart(self, code: str, name: str) -> None:
         self._chart_code = code
         self._chart_name = name
+        self._show_chart_window(f"{name} ({code})")
         self._refresh_chart()
 
     def _on_chart_period(self, period: str) -> None:
         self._chart_period = period
         self._refresh_chart()
 
-    def _on_view_option(self, underlying_code: str) -> None:
-        """从 K 线页跳转到 T 型期权页并选中对应标的."""
-        self.tabs.setCurrentIndex(2)  # 期权T型 tab
+    def _on_view_option(self, underlying_code: str, side: str = "") -> None:
+        """从 K 线窗口跳到主窗口的 T 型页并选中对应标的.
+
+        side 为 'call'/'put' 时（点 K 线上的买卖点跳过来），让 T 型页只看那一侧。
+        方向通过下一次 render_tshape 的 initialFilter 字段带给前端。
+        """
+        self._pending_tshape_filter = side if side in ("call", "put") else ""
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.options_tab))
         for i in range(self.option_underlying_list.count()):
             item = self.option_underlying_list.item(i)
-            if item and item.data(0x0100) == underlying_code:
+            if item and item.data(Qt.UserRole) == underlying_code:
+                # 已经选中这一行时 setCurrentRow 不会触发 currentItemChanged，
+                # 那就自己推一发，否则 initialFilter 没机会送出去
+                already = self.option_underlying_list.currentRow() == i
                 self.option_underlying_list.setCurrentRow(i)
-                break
-
-    def _on_tab_changed(self, index: int) -> None:
-        """切回 K 线页时立即补一次刷新（其他页签的数据由各更新信号驱动）."""
-        if self.tabs.widget(index) is self.chart_tab and getattr(self, "_chart_code", ""):
-            self._refresh_chart()
+                if already:
+                    self._load_option_quotes(underlying_code)
+                return
+        # 没找到对应标的（该 ETF 没有期权），别把方向留给下一次无关的渲染
+        self._pending_tshape_filter = ""
 
     def _auto_refresh_chart(self) -> None:
-        """定时自动刷新 K 线页：只在页签可见且轮询时段内执行，避免无效请求."""
-        if self.tabs.currentWidget() is not self.chart_tab:
+        """定时自动刷新 K 线：窗口没开就不折腾，避免无效请求."""
+        if not self.chart_window.isVisible():
             return
         code = getattr(self, "_chart_code", "")
         if not code:
@@ -666,7 +806,10 @@ class MainWindow(QWidget):
             if label is None:
                 continue
             item = {
+                # label 是给老 chart.html 用的（保留以便回退）；
+                # Vue 版只用 ts，自己按 labelFmt 格式化，不依赖 Python 拼好的字符串
                 "label": label,
+                "ts": b.ts,
                 "open": b.open, "high": b.high, "low": b.low, "close": b.close,
                 # 均价线只有新浪分时数据才有（存在 open 字段）；东财数据无均价
                 "avg": b.open if (mode == "intraday" and b.source == "sina_option") else None,
@@ -691,6 +834,8 @@ class MainWindow(QWidget):
             "mode": mode,
             "period": period,
             "periods": periods or [],
+            # 前端按此决定 x 轴标签格式：date=YYYY-MM-DD / datetime=MM-DD HH:MM / time=HH:MM
+            "labelFmt": label_fmt,
             "bars": out_bars,
             "signals": sigs,
             "quote": self._chart_quote(code),
@@ -830,7 +975,12 @@ class MainWindow(QWidget):
                 continue
             sigs.append({
                 "key": sig.key,
+                # label 供老 chart.html 做字符串匹配定位（保留以便回退）
                 "label": prefix + label,
+                # ts 是原始时间戳，Vue 版按它匹配 bar —— 比匹配格式化后的
+                # 字符串稳：信号是在 today_bars 上检测的（期权时甚至是另一个
+                # 标的的 bars），与 payload.bars 索引不对应，只能按时间对齐。
+                "ts": bar_ts,
                 "labelText": f"【{sig.label}】{sig.detail}",
             })
         return sigs
@@ -856,7 +1006,6 @@ class MainWindow(QWidget):
             self._load_chart(code, name or code)
         else:
             self._load_chart(code, name or self.cfg.name_for(code))
-        self.tabs.setCurrentIndex(1)   # K 线图页
 
     # ---------- 期权 T 型 ----------
 
@@ -912,7 +1061,7 @@ class MainWindow(QWidget):
         payload = build_tshape_data(
             contracts, quotes, underlying_code, name, underlying_quote,
         )
-        self.analysis_view.render(payload)
+        self.analysis_view.render_analysis(payload)
 
     def _trigger_option_full_refresh(self, underlying_code: str) -> None:
         """在工作线程中拉取指定标的全部月份期权行情."""
@@ -950,11 +1099,15 @@ class MainWindow(QWidget):
             self.cfg.name_for(underlying_code),
             underlying_quote,
         )
-        self.option_table.render(payload)
+        # 从 K 线买卖点跳过来时带上方向，一次性消费（定时刷新不该反复改用户的过滤）
+        if getattr(self, "_pending_tshape_filter", ""):
+            payload["initialFilter"] = self._pending_tshape_filter
+            self._pending_tshape_filter = ""
+        self.option_table.render_tshape(payload)
 
     def _on_option_row_clicked(self, code: str, name: str) -> None:
+        # _load_chart 会把 K 线窗口带到前台
         self._load_chart(code, name)
-        self.tabs.setCurrentIndex(1)
 
     # ---------- 期权策略工具 ----------
 
@@ -1202,13 +1355,18 @@ class MainWindow(QWidget):
             daily_bars=daily_bars,
         )
 
-        # 如果成功，补全 legs 的 name 和 price 信息
+        # 补全 legs 的展示字段。
+        # AI 只回 code/side/qty/price，但界面要显示认购/认沽和行权价 ——
+        # 以前没补 option_type/strike，导致 AI 结果里恒显示「K=0.000」且
+        # 认购/认沽为空。这些信息 chain 里都有，按 code 查出来填上。
         if "legs" in result and not result.get("error"):
             by_code = {c["code"]: c for c in chain}
             for leg in result["legs"]:
                 src = by_code.get(leg.get("code", ""))
                 if src:
                     leg["name"] = src.get("name", leg.get("code", ""))
+                    leg["option_type"] = src.get("option_type")
+                    leg["strike"] = src.get("strike")
                     if not leg.get("price"):
                         leg["price"] = src.get("price") or 0
 
@@ -1467,6 +1625,9 @@ class MainWindow(QWidget):
             conn.commit()
 
     def closeEvent(self, event) -> None:
+        # K 线窗口是顶层窗口（没有 parent），不会跟着主窗口隐藏，手动收起来
+        if getattr(self, "chart_window", None):
+            self.chart_window.hide()
         event.ignore()
         self.hide()
         if self.tray:

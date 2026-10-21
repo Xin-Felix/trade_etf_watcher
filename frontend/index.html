@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>日进斗金</title>
+  <!-- Qt 内置提供，不走网络 -->
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <script>
+    // 迁移期：Qt 侧每个 QWebEngineView 加载同一份产物，靠下面这个标记决定显示哪一页
+    // （VueTab 在 setHtml 前整串替换成真实路由名）。
+    // 标记特意不复用 __RJDJ_ROUTE__ 这个名字：它在产物里还会作为变量名出现，
+    // 整串替换会把变量名一起改掉，导致 routes.ts 读不到值。
+    window.__RJDJ_ROUTE__ = '@@RJDJ_ROUTE@@';
+
+    // 时序兜底（必须是同步脚本）：
+    // Python 侧 _BaseTab._run 在 loadFinished 后就开始推数据，写法是
+    //   window.renderTable && window.renderTable(payload)
+    // 而 Vue 走 <script type="module">（defer 语义），mount 晚于 loadFinished，
+    // 那一刻 window.renderTable 还不存在 —— && 短路，数据被静默丢弃。
+    // 这里先挂占位函数把调用缓存下来，Vue mount 后重放。
+    // 渲染都是全量覆盖式的，同名调用只保留最后一条（与 Python 侧 _dedupe_pending 一致）。
+    (function () {
+      var pending = {};
+      window.__RJDJ_PENDING__ = pending;
+      ['renderQuotes', 'renderTable', 'updateChart', 'renderTShape', 'renderStrategy',
+       'renderAiResult', 'renderAnalysis'].forEach(function (fn) {
+        window[fn] = function (payload) { pending[fn] = payload; };
+      });
+    })();
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

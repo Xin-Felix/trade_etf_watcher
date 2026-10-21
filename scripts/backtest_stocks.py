@@ -1,4 +1,4 @@
-"""个股长周期回测（Tushare 代理，分钟线）：覆盖大/中/小市值.
+"""个股长周期回测（Tushare 官方直连，分钟线）：覆盖大/中/小市值.
 
 用法:
     python scripts/backtest_stocks.py 5              # 5分钟，用缓存
@@ -153,7 +153,7 @@ def main() -> None:
         print(f"用缓存: {len(raw)} 只股票，共 {sum(len(v) for v in raw.values())} 根")
     else:
         client = TushareClient()
-        print(f"下载 {len(STOCKS)} 只个股 5 分钟线（近 {days} 天，走代理）...")
+        print(f"下载 {len(STOCKS)} 只个股 5 分钟线（近 {days} 天）...")
         raw = {}
         for ts_code, name, cap in STOCKS:
             bars = fetch_mins(client, ts_code, days)

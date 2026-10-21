@@ -5,5 +5,8 @@
     <file alias="table.html">table.html</file>
     <file alias="tshape.html">tshape.html</file>
     <file alias="analysis.html">analysis.html</file>
+    <!-- Vue 前端产物：由 scripts/build_frontend.sh 从 frontend/dist/index.html 生成，
+         不进 git（但编译结果 web_resources.py 进 git） -->
+    <file alias="app.html">app.html</file>
   </qresource>
 </RCC>

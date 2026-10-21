@@ -1,11 +1,18 @@
 # 日进斗金 项目交接文档
 
-> 更新日期：2026-08-12 ｜ 当前版本：v0.9 可运行
+> 更新日期：2026-09-17 ｜ 当前版本：v0.9 可运行
 > 本版重点：改名+红色图标、量价形态买卖点（替换 MACD/MA/RSI）、市场日内动量提醒、
-> AI 策略推荐（DeepSeek 深度思考）、API 密钥 GUI 配置、macOS 原生通知+点击跳转、
-> Tushare 代理（分钟线）、**期权分析页（波动率微笑/曲面/持仓量分布/卖方指标/IV期限结构）**、
+> API 密钥 GUI 配置、macOS 原生通知+点击跳转、
+> Tushare 官方直连（日K/交易日历/分钟线）、**期权分析页（波动率微笑/曲面/持仓量分布/卖方指标/IV期限结构）**、
 > **每日期权快照存储（IV/OI 历史积累）**、**信号有效性回测结论（第 8 节，必读）**
-> 下一步：**设置页 GUI / 远程推送 / Windows 打包验证**
+> 前端已全部迁到 **Vue 3 + Vite + TS**（见 `frontend/`）：行情看板、期权 T 型、期权分析、K 线图。
+> 页签只有 3 个（看板/T型/分析），**K 线图改为点标的时弹出的独立窗口**。
+> 老 HTML 保留在 qrc 里可随时回退。**AI 推荐入口已从界面移除**（Python 侧代码仍在）。
+> 近期修复（见 §10）：**指数 K 线取数用错 API**（`get_security_bars` → `get_index_bars`，原来指数数据全是乱码/负价）；
+> **期权分时 K 请求全打在已摘牌合约上**（某日一根都没入库，根因是取合约没剔除已到期月）；新浪期权零成交分钟的全 0 bar 过滤。
+> T 型页现价带打开即居中、指标四列一屏（不再横向滑）、**点合约代码复制**、**点 K 线买卖点跳期权页**；
+> 指数也参与买卖点检测（只入库供查看、不提醒）；**看板买卖点按 1/5/15 分三个周期分列**（提醒仍只发 5 分档）。
+> 下一步：**收敛单 SPA / 今日信号页 / 设置页 GUI**
 >
 > 新会话接手时：**先读「第 8 节 信号规则与回测结论」和「第 10 节 已知坑」**，
 > 前者能避免重复走已经证伪的方向，后者能避开 90% 的重复踩坑。
@@ -14,7 +21,7 @@
 
 ## 1. 项目是什么
 
-跨平台（macOS / Windows）桌面 GUI 程序：对 A 股 ETF 及其期权进行**定时自动盯盘**，检测到异常行情信号（跳空、急涨急跌、日内拐点、量价形态）时**系统通知 + 弹窗提醒**，并提供行情看板、K 线图、期权 T 型报价、期权策略工具与 AI 策略推荐。
+跨平台（macOS / Windows）桌面 GUI 程序：对 A 股 ETF 及其期权进行**定时自动盯盘**，检测到异常行情信号（跳空、急涨急跌、日内拐点、量价形态）时**系统通知 + 弹窗提醒**，并提供行情看板、K 线图、期权 T 型报价、期权分析与策略工具。
 
 **定位**：盯盘提醒工具，不是自动交易系统。信号用于提示"该看一眼这根 K 线了"，
 经回测验证的方向性参考见第 8 节。
@@ -30,23 +37,23 @@
 | ETF 行情轮询（通达信主源 + 东财备用，5s 周期） | ✅ 稳定，watch 11 个期权标的 ETF |
 | TDX 服务器并发探测自动选 IP | ✅ ~2 秒选出最快节点，断线自动重连 |
 | 信号引擎（8 类信号，按日去重） | ✅ 端到端延迟 ~10s；含期权 IV 飙升 + PCR 异常 |
-| 行情看板（HTML 表格） | ✅ 11 个期权标的 ETF（watchlist 用户可调） |
-| K 线图（ECharts 蜡烛图/分时折线、MA5/10/20、成交量红绿、信号标记点） | ✅ |
+| 行情看板（**Vue 3**） | ✅ 11 只 ETF **按跟踪指数分组、默认收起可折叠**，每组带指数行对比；列：提醒/名称/代码/最新价/涨跌/涨跌幅/今开/跟踪偏离/**1分·5分·15分买卖点三列**。三列各显示该周期最新买卖点（解决「K 线图某周期有买点、看板看不到」）；指数行显示指数自己的，组内成员出信号数由名称旁角标表达。Python 只发原始快照，分组/涨跌/文案全在前端 |
+| K 线图（ECharts 蜡烛图/分时折线、MA5/10/20、成交量红绿、信号标记点） | ✅ **独立弹出窗口**（不占页签）；**点买卖点 pin 跳期权 T 型页**：买点自动过滤 CALL、卖点过滤 PUT |
 | K 线信息面板（右侧常驻：最新价/涨跌/开高低收/成交量/买一卖一/持仓/IV） | ✅ 跟随悬停 bar 联动，移开回最新价；期权标注"昨结" |
 | K 线悬停 legend（左上角股票软件风格：OHLC + 涨跌额/涨跌幅 + 量，tooltip 同步增强） | ✅ |
 | K 线周期切换（分时/1/5/15/30/60分/日K，期权与 ETF 均支持） | ✅ 期权 N 分=东财 1 分聚合；ETF=本地 1 分聚合；日K=新浪(期权)/TDX(ETF) |
-| K 线自动刷新（页签可见 + 轮询时段内按 5s 周期刷新，缩放窗口保持） | ✅ |
+| K 线自动刷新（窗口可见 + 轮询时段内按 5s 周期刷新，缩放窗口保持） | ✅ |
 | 期权图表异步加载（工作线程取数 + 序号防乱序 + 加载中提示） | ✅ 点期权不再卡界面 |
 | 今日信号页 | ✅ 时间格式已统一 |
-| 期权 T 型（9 个有合约的标的、1200+ 合约） | ✅ T 型布局：到期日 chips + CALL红/PUT绿 + 现价带 + 过滤 + 左右滑出买卖/量/持仓/IV/Delta；列表由合约表驱动，无合约标的不进期权页 |
-| 期权分时 K（东财 trends2，真实 OHLC 蜡烛图，沪深均支持） | ✅ 点击合约实时拉取 |
-| 近价合约分时 K 盘中持续入库（ATM±2 档 ~90 合约，轮换限速） | ✅ 盘后东财停供也有本地蜡烛图 |
-| 期权分时折线（新浪，无 OHLC） + 日 K（新浪，真实 OHLC） | ✅ 作为东财失败时的降级源（httpx 直连，8s 超时） |
+| 期权 T 型（9 个有合约的标的、1200+ 合约） | ✅ T 型布局：到期日 chips（已过期月份不显示）+ CALL红/PUT绿 + 现价带（打开即居中）+ 过滤；指标四列一屏铺开（合约代码/涨跌幅 · 卖一/买一 · 量/持仓 · IV/Delta），**点合约代码复制到剪贴板**；列表由合约表驱动，无合约标的不进期权页 |
+| 期权分时 K（东财 trends2，真实 OHLC 蜡烛图） | ⚠️ 代码在，但**东财源近期实测返回 0**（整域限流），当前实际由新浪源承担（见下） |
+| 期权分时 K（新浪，当前实际主力） | ✅ **仅沪市**（10xxxxxx）；预加载 3 个沪市标的的未到期平值合约 + ATM 轮换持续入库；**深市期权两个源都取不到分时**（接口限制） |
+| 近价合约分时 K 盘中持续入库（ATM±2 档，轮换限速） | ✅ 盘后源停供也有本地蜡烛图 |
 | 期权策略工具（T 型页底部抽屉：预设策略 + 组合篮子 + 8 张指标卡 + 到期损益图） | ✅ 最大盈亏/盈亏平衡/每日时间损耗/组合希腊字母，7 个预设模板 |
-| **AI 策略推荐（DeepSeek）** | ✅ 喂行情/技术面/期权链/Tushare历史，返回结构化策略+一键填篮子；深度思考可展开 |
+| ~~AI 策略推荐（DeepSeek）~~ | ⚠️ **入口已从界面移除**（Vue 版没搬）。Python 侧代码与 `watcher/ai/` 仍在，老 `tshape.html` 回退时可用 |
 | **期权分析页**（独立 Tab） | ✅ 卖方指标面板（ATM IV/25Δ偏斜/PCR/预期波动）+ 波动率微笑（当月+多月对比）+ 持仓量分布（OI柱状图+Call墙/Put墙+MaxPain）+ 波动率曲面热力图 + 平值IV期限结构 |
 | **每日期权快照存储** | ✅ 收盘前自动存储全部合约 IV/OI/价格快照到 `option_daily_snapshot` 表（幂等），用于历史趋势分析 |
-| **量价形态买卖点**（`signals/patterns.py`） | ✅ 14 种形态加权打分；**买入信号经回测未证实有效，见第 8 节** |
+| **量价形态买卖点**（`signals/patterns.py`） | ✅ 14 种形态加权打分；**买入信号经回测未证实有效，见第 8 节**。ETF 与**跟踪指数**都检测，但指数只入库供查看、**不进提醒**（不可交易） |
 | **市场日内动量**（`signals/intraday_momentum.py`） | ✅ 14:30 推末半小时方向；一年 ETF 实测 t=+5.00，唯一统计显著的信号 |
 | **macOS 原生系统通知** | ✅ UNUserNotificationCenter 横幅弹出 + 点击跳转对应标的 K 线 |
 | **API 密钥 GUI 配置** | ✅「API 设置」按钮，Tushare/DeepSeek key 存 SQLite，即时生效 |
@@ -89,14 +96,20 @@ pythonProject/
 ├── scripts/                 # 冒烟测试 + 回测调参工具
 │   ├── smoke_option_chart.py # 冒烟：点击期权合约捕获图表 payload
 │   ├── smoke_chart_periods.py # 冒烟：周期切换截图 /tmp/chart_*.png
-│   ├── smoke_tshape.py      # 冒烟：T 型页渲染 + 指标分页截图 /tmp/tshape_*.png
-│   ├── smoke_strategy.py    # 冒烟：策略工具端到端（真实点按钮 → 读 DOM 断言）
+│   ├── smoke_strategy.py    # 冒烟：策略工具端到端（老 tshape.html 版，真实点按钮 → 读 DOM）
 │   ├── smoke_underlyings.py # 冒烟：看板 11 标的 + 期权页 9 标的列表
+│   ├── smoke_quote_board.py # 冒烟：看板 9 项断言（分组/偏离/折叠/徽标/回调，真实 WebEngine）★
+│   ├── smoke_vue_shell.py   # 冒烟：Vue 骨架（route 注入/桥接双向/mount 前推送不丢/路由分发/老页面无回归）★
+│   ├── smoke_analysis.py    # 冒烟：期权分析页 6 面板（可用性/14卡/canvas/切月/折叠 resize）★
+│   ├── smoke_chart.py       # 冒烟：K 线图（3 grid/周期/悬停联动/缩放保持/信号定位/loading）★
+│   ├── smoke_tshape.py      # 冒烟：期权 T 型（过期月/现价带居中/四列指标/代码复制/过滤/篮子/预设）★
+│   ├── webengine_probe.py   # 验收探针工具（同步化 WebEngine 调用，各 smoke 脚本共用）
+│   ├── build_frontend.sh    # 前端构建 + qrc 编译（改前端后的唯一入口）★
 │   ├── smoke_patterns_wiring.py # 冒烟：量价形态经 detect_resonance → 配对全链路
 │   ├── smoke_notify_click.py    # 冒烟：发真实系统通知，验证点击回调
 │   ├── backtest_multi.py    # 本地多日多标的回测（毛/净双口径）★
 │   ├── backtest_trend.py    # 趋势策略信号层回测（§11.6 Step 0，含份额拆分前复权+预测力诊断）★
-│   ├── backtest_stocks.py   # 个股回测（Tushare 代理下载分钟线）★
+│   ├── backtest_stocks.py   # 个股回测（Tushare 下载分钟线）★
 │   ├── backtest_patterns.py # 单标的单日形态明细
 │   ├── sweep_patterns.py    # 形态权重配置对比（命中结果缓存，秒级切换配置）★
 │   ├── test_intraday_momentum.py # 日内动量检验（回归+策略+分档+按月）★
@@ -147,9 +160,10 @@ pythonProject/
             ├── chart.html   # ECharts K 线页（JS: window.updateChart）
             ├── table.html   # 通用表格页（JS: window.renderTable）
             ├── tshape.html  # 期权 T 型报价页（JS: window.renderTShape）★
-            ├── analysis.html # 期权分析页（JS: window.renderAnalysis）★ 波动率微笑/曲面/持仓量/卖方指标/IV期限结构
+            ├── analysis.html # 期权分析页旧版（已迁 Vue，保留供回退）
             ├── echarts.min.js
-            ├── web_resources.py / web_resources.qrc  # qrc 资源注册（改 html 后跑 pyside6-rcc 重新生成 .py）
+            ├── app.html      # Vue 前端产物（frontend/ 构建生成，不进 git；JS: 同名 render 入口）
+            ├── web_resources.py / web_resources.qrc  # qrc 资源注册（改页面后跑 scripts/build_frontend.sh）
             └── __init__.py
 ```
 
@@ -162,8 +176,11 @@ pythonProject/
 - **选 IP**：不用 `select_best_ip`（又慢又吵），自己实现：内置 24 个常用服务器 + config 合并，`ThreadPoolExecutor` 并发 TCP 探测（1.5s 超时），按延迟排序，前 6 个逐个 `connect` 验证，结果缓存 5 分钟
 - **断线**：fetch 返回空或异常 → 强制重新探测重连一次
 - **价格缩放（极易踩）**：
-  - 快照 `get_security_quotes`：ETF/股票 **÷10**，指数（000/399 开头）**不除**
-  - 分钟 K `get_security_bars`：**不除**（已是实际价格）
+  - 快照 `get_security_quotes`：ETF/股票 **÷10**，指数 **不除**
+  - 分钟 K：**不除**（已是实际价格）
+- **指数与 ETF 要用不同的取 K 线 API（极易踩）**：指数走 `get_index_bars`，ETF/股票走 `get_security_bars`，两者互斥。
+  用 `get_security_bars` 取指数会返回垃圾：datetime 是 `2004-00-55 04:01` 这类乱码、close 也是错的（实测 5582 vs 正确 4546，只有第一条对）；
+  反过来用 `get_index_bars` 取 ETF 返回空。判据用 `_is_index(market, pure)` —— **要分市场**：沪市 `000xxx` 是指数，深市只有 `399xxx` 是指数（深市 `000xxx` 是个股）
 - **vol 字段**：可能是 `5.877e-39` 这种极小 float 或超大值，必须 `_safe_int` 否则 SQLite 溢出
 - **servertime 字段不可靠**：正常是 `14:55:10.070`，但经常出现 `153:04:31.278` 这种 3 位小时段的怪格式。**无法解析时不许瞎猜**（之前"去百位1"产生了 45:15、53:04 等非法时间），统一回退到 `created_at`（见 §6 时间处理）
 
@@ -188,8 +205,14 @@ pythonProject/
 - **日 K**：`jsonp_v2.php//StockOptionDaylineService.getSymbolInfo`（httpx 直连）— 返回 dict 列表 `{d,o,h,l,c,v}` 真实 OHLC；到期/异常合约可能返回 dict 错误体（必须 `isinstance(data, list)` 判断 + KeyError 兜底）
 - **分时线/日K 只支持沪市**（合约 10 开头）；深市（90 开头）K 线走东财 trends2（见 §4.4）
 
-### 4.4 东财 trends2（期权分时 K，主源）— `option_meta.py`
+### 4.4 期权分时 K（东财 trends2 = 设计主源，新浪 = 当前实际主力）— `option_meta.py`
 
+- **数据源现状（2026-09 实测）**：
+  - **真正在供数的是新浪**（`fetch_option_minute_bars`），仅沪市 `10xxxxxx`，当日 232~240 根。
+  - **东财 trends2**（下面详记的那套，本是设计主源）近期实测**返回 0**（整域限流未恢复），只作为代码兜底留着。
+  - **深市期权（90xxxxxx）分时两个源都取不到**——新浪接口不支持深市，接口本身的限制，不是缺陷。
+  - **入库口径**：只挑「未到期 + 沪市 + 平值附近」的合约。别用「合约表前 N 个」——那是上一个到期月的已摘牌合约，取不到数据（踩过，见 §10）。
+  - **数据体检**：`PYTHONPATH=. python scripts/diag_data_health.py` 一览今日各类数据完整度（盘中按应有根数估算画进度条，收盘后按 240 根算满，末尾汇总问题）。
 - **用途**：期权合约的分时 K 线（真实分钟 OHLC，画蜡烛图），沪深都支持
 - **接口**：`push2.eastmoney.com/api/qt/stock/trends2/get`，`fields2=f51,f53,f54,f55,f56,f57,f58`
   - 每点格式：`时间,最新价,最高,最低,成交量,成交额,均价`
@@ -203,7 +226,7 @@ pythonProject/
 - **TDX exhq（备选未采用）**：仅 `112.74.214.43:7727` 可连但只剩 `get_instrument_count` 有响应，行情/K线全 None，残废不可用
 - **腾讯/雪球/同花顺**：腾讯无期权合约（mkline param error），雪球需登录，同花顺未找到接口
 
-### 4.45 Tushare（期权历史日K + 交易日历）— `fetchers/tushare_src.py` ★
+### 4.5 Tushare（期权历史日K + 交易日历）— `fetchers/tushare_src.py` ★
 
 - **token**：`~/.config/etf_watcher/secrets.env` 的 `TUSHARE_TOKEN`（权限 600）或环境变量；**不放 config.yaml**（那个会进 git/打包）。没 token 时整个模块静默禁用，全部降级到原有源
 - **开关**：`config.yaml` 的 `tushare.enabled / option_daily / fund_daily_fallback / trade_calendar`
@@ -213,7 +236,7 @@ pythonProject/
 - `trade_cal`：交易日历，落地 SQLite `trade_calendar` 表（只存交易日），离线也能判断。实测国庆假期正确（10/1–10/7 无交易日、10/8 开市）
 - 限速：接口间隔 ≥0.35s（模块级 `_MIN_INTERVAL`）；任何失败都返回空 + 记 `last_error`，不抛异常
 
-### 4.5 akshare（期权元数据）
+### 4.6 akshare（期权元数据）
 
 - `option_current_day_sse()` / `option_current_day_szse()`：每日合约列表（含行权价、到期日、标的），共约 1200 个合约
 - **期权标的共 11 个**（`option_meta.ETF_OPTION_UNDERLYINGS`：沪 6 + 深 5），但**交易所实际有合约的只有 9 个**——科创50ETF工银（588050）、创业板ETF易方达（159952）截至 2026-07 无上柜合约（两所官网合约清单实测）；期权页列表由合约表驱动（只显示 9 个），11 个 ETF 都在主页 watchlist 看行情
@@ -389,19 +412,86 @@ K 线图上的标记：涨类红点（K 线下方）、跌类绿点（上方）�
    能区分"入场信号没用"和"出场逻辑差"，比反复调权重高效得多。
 5. **口径要一致**。曾犯过基准行不扣费、策略行扣费的错误，导致对比失真。
 
-## 9. UI 架构（HTML/ECharts）
+## 9. UI 架构
+
+### 9.1 Vue 前端（当前）
+
+- **工程**：`frontend/`（Vue 3 + Vite + TS + Pinia）。`vite-plugin-singlefile` 打成**单文件** `app.html`，
+  再进 qrc 由 `VueTab` 用 `setHtml` 加载。走 `qrc:` 源是刻意的：不起本地 HTTP server（省掉无鉴权端口的安全问题）。
+  代价是多文件 ESM 会被 CORS 拦，所以必须单文件产物。
+- **TypeScript 锁 5.x**：`vue-tsc` 与 TS 7 不兼容（TS7 是 Go 移植版，移除了 `./lib/tsc` 导出）。别升 7。
+- **一个 `app.html` 多路由**：产物里的 `@@RJDJ_ROUTE@@` 标记在 `setHtml` 前被替换成路由名，
+  每个 `VueTab(route=...)` 实例各自决定显示哪页。永久诊断路由 `__probe__` 供骨架冒烟用，与迁移进度解耦。
+- **契约是「事实」不是「渲染指令」**：Python 只发原始数据（如 `renderQuotes` 发快照），
+  分组/格式化/文案全在前端。旧版把视图逻辑放 Python（150 行）已废弃。
+- **图表**：`echarts` 按需引入（4 图表 + 9 组件，产物 ~790K，比完整包小）。
+  `EChart.vue` 用 `ResizeObserver` 自适应，一次解决旧版「面板展开只 resize 部分图表」「display:none 容器初始化为 0」。
+  面板折叠用 `v-show` 不用 `v-if`（`v-if` 会销毁图表实例）。
+  实例挂在宿主元素的 `el.__echarts__` 上，供验收脚本读取（按需引入下没有全局 `window.echarts`）。
+- **不装 vitest**：store 逻辑由真实 WebEngine 回读 DOM 覆盖，比单元测试更贴近实际（布局/渲染问题单测覆盖不到）。
+- **信号定位按时间戳**，不能用数组下标：信号是在当日 bars 上检测的（期权模式下用的还是对应 ETF 的 bars），
+  与 `payload.bars` 的索引没有对应关系。两边 ts 可能一个 12 位一个 14 位，都截到分钟再比。
+
+### 9.2 老手写 HTML（已迁 Vue，保留供回退）
 
 - `webtab.py`：`_BaseTab(QWebEngineView)` 内嵌 qrc 里的 HTML；`QWebChannel` 注册 `bridge` 对象供 JS 调用（`requestRefresh` / `onRowClicked` / `requestPeriod`）
 - Python → JS：`ChartTab.update_chart(payload)` → `window.updateChart(json)`；`TableTab.render(payload)` → `window.renderTable(json)`；`TShapeTab.render(payload)` → `window.renderTShape(json)`
-- JS → Python：`bridge.onRowClicked(code, name)` → 跳 K 线页；`bridge.requestPeriod(p)` → K 线周期切换
-- **新增/修改 HTML 后必须重新编译资源**：`cd watcher/gui/web && pyside6-rcc web_resources.qrc -o web_resources.py`
+- JS → Python：`bridge.onRowClicked(code, name)` → 看 K 线；`bridge.requestPeriod(p)` → K 线周期切换；
+  `bridge.viewOption(code, side)` → 跳 T 型页（`side` 取 `call`/`put` 时顺带切过滤，空串表示不动用户当前选择。
+  声明了 `@Slot(str)` + `@Slot(str, str)` 两个重载，因为老 `chart.html` 只传一个参数）；
+  `bridge.copyText(text)` → 写 Qt 剪贴板
+- **方向一次性下发**：`_on_view_option` 把方向记在 `_pending_tshape_filter`，由下一次 `render_tshape` 的
+  `initialFilter` 字段带给前端，发出即清空。**必须一次性**，否则每 5 秒的定时刷新会反复把用户的过滤拽回去。
+  另外 `setCurrentRow` 在行本来就选中时不触发 `currentItemChanged`，那种情况要自己补一发 `_load_option_quotes`
+- **改前端后必须重新编译资源**：跑 `./scripts/build_frontend.sh`（vite build → app.html → pyside6-rcc 三步串联）。
+  只改老的手写 HTML 也可以单独跑 `cd watcher/gui/web && pyside6-rcc web_resources.qrc -o web_resources.py`，
+  但漏跑这步的话运行时加载的仍是旧内容（页面是从 qrc 读的）。
 - payload 格式见 `main_window.py` 的 `_build_chart_payload` / `_load_option_quotes`（T 型）/ 各 `render({...})` 调用
 - **K 线周期切换（chart.html）**：payload 带 `period`/`periods` 渲染按钮行；期权 N 分=东财 1 分经 `bars.aggregate_minute_bars` 聚合（A股时段对齐：09:30 起桶、11:30/15:00 并入当段、跨天不串）；ETF N 分=本地 1 分聚合；日K=新浪(沪市期权)/TDX category 9(ETF)，深市期权无日K源（按钮不显示）；跨天图 label 带 `MM-DD` 前缀；成交量红涨绿跌（蜡烛跟开收、分时跟前一分钟）
-- **K 线自动刷新（main_window）**：`QTimer` 跟随 `poll_interval_seconds`，只在 ①K 线页签可见 ②`is_polling_hours` 内才 `_refresh_chart()`；切回 K 线页签立即补刷一次；chart.html 在 `setOption` 前读旧 `dataZoom` 窗口回填，**自动刷新不重置用户缩放**
+- **K 线自动刷新（main_window）**：`QTimer` 跟随 `poll_interval_seconds`，只在 ①`chart_window.isVisible()` ②`is_polling_hours` 内才 `_refresh_chart()`。
+  K 线已改为**独立顶层窗口**（不是页签），所以判据是窗口可见性；启动时只记住默认标的、不弹窗也不取数，等点标的才开；主窗口 `closeEvent` 里一并 `hide()`。
+  前端在 `setOption` 前读回旧 `dataZoom` 窗口，**自动刷新不重置用户缩放**
 - **期权图表异步加载（main_window._ChartJob）**：期权取数走网络（东财慢/封时单次 ~17s），**绝不许跑 GUI 线程**（曾因此卡死界面）。QThreadPool(2) 跑取数+组包，`_chart_seq` 序号防乱序（连点两个合约，慢返回不会覆盖新的）；点击立即显示"加载中"（period 按钮可先切）；取数进行中自动刷新跳过本轮；异常时渲染空态（不会永远"加载中"）；ETF 图只读本地 SQLite 保持同步直出
 - **K 线信息面板 + 悬停 legend（chart.html）**：右侧面板显示最新价/涨跌/涨跌幅/开高低收/成交量（期权加买一/卖一/持仓/IV；昨收由涨幅反推；成交量负值夹 0）；**面板与 legend 都跟随悬停 bar 联动**（`updateAxisPointer` → `barSideData(i)` 组装该根的 OHLC/涨跌/量，`globalout` 还原最新报价）；左上角 legend 股票软件风格，tooltip formatter 同步增强；payload 新增 `quote`（`_chart_quote()` 组装）和 `digits`（期权 4 位、ETF 3 位）
-- **T 型报价页（tshape.html）**：到期日 chips + CALL红/PUT绿（A股习惯：认购红、认沽绿）+ 行权价居中 + 现价带（插在 ATM 位置）+ 底部全部/CALL/PUT 过滤；payload 由纯函数 `option_meta.build_tshape_data()` 组装；同一行权价多合约（带A调整合约）纵向堆叠；**指标列横向滑动**：最新价固定在行权价旁，外侧滚动区 3 页（卖一/买一 → 量/持仓 → IV/Delta），全部 `.colscroll` 同步滚动，右下角 ◀ ▶ 分页按钮；成交量跟涨跌色；悬停 tooltip 汇总全部字段
+- **T 型报价页**：到期日 chips + CALL红/PUT绿（A股习惯：认购红、认沽绿）+ 行权价居中 + 现价带（插在 ATM 位置）+ 底部全部/CALL/PUT 过滤；payload 由纯函数 `option_meta.build_tshape_data()` 组装；同一行权价多合约（带A调整合约）纵向堆叠；悬停 tooltip 汇总全部字段。
+  老 `tshape.html` 的指标列是**横向 3 页滑动**（`.colscroll` 同步 + ◀▶ 分页）；**Vue 版已改成四列一屏铺开**，见 §9.3
 - 表格页 columns 支持 `type: num/pct`（digits 控制小数位，pct 自动红涨绿跌）
+
+### 9.3 T 型页（Vue 版）实现要点
+
+- **指标四列一屏**：合约代码/涨跌幅 · 卖一/买一 · 量/持仓 · IV/Delta，每列上下两行。
+  取代旧版的横向 3 页滑动——信息量一样，但不用再滑，行高还从 57px 降到 47px（一屏 ~10 行 → ~12 行）。
+  涨跌幅从「最新价」那个固定列挪进了代码列，所以加了代码也没增加行高。
+- **表头必须补滚动条宽度**：`.thead` 在滚动容器 `.twrap` 外面，表体被纵向滚动条挤窄（QWebEngine 下 10px），
+  两边各按 `1fr` 分列就会差 2~3px、列标题和数据错位。`TshapeTable` 用 `ResizeObserver` 量出
+  `offsetWidth - clientWidth` 写进 `--tshape-sbw`，表头 `padding-right` 吃掉它。滚动条宽度各平台不同（macOS 覆盖式是 0），只能量不能写死。
+- **现价带居中**（`composables/useStripScroll.ts`）：打开/换标的/换到期月/切过滤都定位一次。
+  位移用 `getBoundingClientRect` 差值算，**不能用 `offsetTop`**（滚动容器没有定位属性，`offsetParent` 是更外层的元素）。
+  容器 `clientHeight` 为 0 时（Qt 页签没激活）等下一帧重试。
+- **点合约代码复制**：走 bridge 的 `copyText` 交给 Qt 剪贴板。
+  **不能用 `navigator.clipboard`**——页面是 `qrc:` 源，不算 secure context，剪贴板 API 在那儿不可用。
+- **表头标的价格点击 = 看该 ETF 的 K 线**（原来也是「回到现价」，和旁边按钮重复了）。
+  复用 `rowClicked`，Python 按代码格式分流：8 位纯数字走期权（后台线程取东财），否则走 ETF（本地 SQLite 同步直出）。
+- **退化 IV 不展示**：`fmtIv` 把 `< 1%` 的当没有。深度实值合约上数据源的 IV 求解器会返回触底值
+  （实测 0.0009，对应 delta 已经是 1.0），显示成「0.1%」会被误读成波动率极低。
+  注意 `smile.callIV` 那类字段已经是百分数，别套这个函数。
+- **`.mpage` 之类的类名别叫 `.page`**：会和页面根容器的 `.page` 撞车，把整页变成两列网格（踩过一次，T 型布局整体塌陷）。
+
+### 9.4 买卖点的三条路径（口径不同，容易搞混）
+
+| 路径 | 数据来源 | 覆盖范围 | 说明 |
+|---|---|---|---|
+| K 线图上的 pin | **实时算，不读 DB**（`_compute_chart_signals`） | ETF / 指数 / 期权（期权用对应 ETF 的 bars） | 每次打开都在当日 bars 上滑窗回溯，能看到全天买卖点。**按图表当前显示的周期检测**（你看 1 分就用 1 分算） |
+| 看板「最新买卖点」三列（1分/5分/15分） | 读 DB（`_latest_trade_signals`） | ETF / 指数 | 轮询里 `_detect_technical_signals` **按 1/5/15 分三个周期分别检测**、key 带周期标签（`resonance_long_5m_1024`），看板分列展示。每轮只测**当下**窗口，一天里逐轮攒 |
+| 弹窗 / 系统通知 | `signals_fired` 信号 | **只有 ETF 的 5 分档** | 只发 `_ALERT_PERIOD`（5 分）那档：1 分太吵、15 分太钝。指数三档都不进提醒（不可交易，`cfg.is_index` 挡掉） |
+
+- **为什么看板要三列**：同一时刻不同周期结论可能不同（1 分噪音多、更易触发）。以前看板只显示 5 分那档，
+  用户在 K 线图看 1 分有买点、转头看板却没有，会以为漏了。三列分开就能一眼对上是哪个周期的信号。
+- 「K 线图上有 pin 但看板对应周期列是空的」仍可能发生：前者全天回溯，后者只记录轮询当刻命中的。
+- **15 分档取数量**：检测循环取 `get_bars(limit=600)`——15 分聚合要 ≥25 根即 ≥375 根 1 分，取 200 根时 15 分档永远达不到门槛（踩过）。
+- 指数的 bars 是 2026-09 修好 `get_index_bars` 之后才开始积累的，数据攒够之前信号会比 ETF 少
+  （实测：ETF 193 根 5 分 K 出 4~8 个信号，截到指数当时的 48 根同样出 0~1 个 —— 不是被挡住，是数据不够）。
+- 事件类信号（急涨/跳空/日内拐点）仍然完全不看指数，见 `_poll` 里的 `is_index` 判断。
 
 ## 10. 已知坑与解决方案（新会话必读）
 
@@ -430,13 +520,23 @@ K 线图上的标记：涨类红点（K 线下方）、跌类绿点（上方）�
 | 期权成交量为负/面板昨收异常 | `[6]` 被误当成交量字段；昨收/昨结基准混用 | 成交量用 `[41]`；期权涨跌幅对昨结、面板标注"昨结" |
 | 期权点图卡死界面 | 图表网络取数跑在 GUI 线程（东财慢时单次 ~17s，叠加 5s 自动刷新=永久卡死） | `_ChartJob` 工作线程取数 + seq 防乱序 + inflight 时自动刷新跳过 |
 | akshare 新浪分时/日K 挂起 | akshare 用 requests 无 timeout，网络异常时无限等待 | httpx 直连（8s 超时），返回是 dict 列表不是位置数组 |
-| 新增 HTML 后白屏/404 | qrc 是编译进 web_resources.py 的，新文件没注册 | qrc 加 file 条目 + `pyside6-rcc web_resources.qrc -o web_resources.py` |
+| 新增 HTML 后白屏/404 | qrc 是编译进 web_resources.py 的，新文件没注册 | qrc 加 file 条目 + `./scripts/build_frontend.sh` |
+| 改了页面但界面没变 | 页面从 qrc 读，改源文件不重编译不生效 | `./scripts/build_frontend.sh` |
+| VueTab 报「找不到 @@RJDJ_ROUTE@@」 | app.html 是旧产物或没构建 | `./scripts/build_frontend.sh` |
 | 分钟聚合 60 分出 6 根 | 朴素按整点分桶会把 11:30/15:00 单独成桶 | `bars._session_index` 按交易时段对齐（240 分钟制，收盘点并入当段） |
 | 期权 N 分只有当天几根 | 东财 trends2 对期权只返回当日数据（ndays=5 无效） | 正常表现；历史看日K（新浪） |
 | 东财趋势接口被周期切换打爆 | 每次切换都发请求，连发触发单 IP 封禁 | `_EM_CACHE` 60s 内存缓存 + 本地 SQLite 缓存兜底 |
 | 悬停 legend/面板数据错位几百根 | `updateAxisPointer` 事件用了 `dataIndexInside`（缩放窗口内序号），默认缩放只显示末尾一段 → 映射到全量数据的错误位置 | 必须用 `ev.dataIndex`（绝对序号），tooltip 同理 |
+| MA 线抢走买卖点 pin 的点击 | MA 线 `z:5` 比 markPoint 默认层级高，zrender 命中检测按 z 从高到低走，线横穿 pin 的地方形成点不动的死区（实测卖点 pin 视觉 28px、只有 ~5px 能点中） | markPoint 设 `z:12`，命中区恢复成连续 24~25px |
+| Vue 3 模板 ref 写在 `v-for` 里会变数组 | `ref="stripEl"` 放在 `v-for` 内部 → `stripEl.value` 是数组，`.offsetTop` 取到 `undefined`，`scrollTop = NaN` 被**静默忽略**（不报错，只是不生效；T 型页现价带一直停在顶部就是这个） | 改用 `querySelector` 找元素，或用函数 ref |
+| 冒烟里连续派发 MouseEvent 会被合并成 dblclick | zrender 就不再报 `click`，扫描命中区会出现物理上不可能的非连续结果（-6 ✓ / 0 ✗ / +6 ✓） | 几何测量用 `zr.handler.findHover(x,y)`（不涉及事件语义）；逐点验证一次会话只点一次 |
+| 关掉 K 线窗口后主窗口「点了没反应」 | macOS 上关掉当前活动窗口后，主窗口虽可见但不是活动窗口，点它里面的内容第一下只用于激活窗口、不传给 QWebEngineView | `_ChartWindow.closeEvent` → `_on_chart_window_closed()` 主动 `raise_()`+`activateWindow()` 主窗口（主窗口已收进托盘则不打扰） |
+| K 线窗口重新打开看不见 | ①最小化状态下 `show()` 不还原，窗口留在 Dock 里；②外接屏拔掉后窗口位置落在不可见区域 | `_show_chart_window`：最小化走 `showNormal()`；`_ensure_on_screen()` 不在任何屏幕内就搬回主屏中间 |
+| **offscreen 平台复现不出窗口类问题** | `QT_QPA_PLATFORM=offscreen` 明确不支持 `raise()`（会打 "This plugin does not support raise()"），窗口激活/焦点/多屏行为都测不到 | 窗口层面的 bug 别指望无头冒烟能复现；改成断言「该调的方法调了」（见 `test_closing_chart_window_returns_focus_to_main`），真实表现要在 macOS 上验 |
 | pytdx 单连接多线程共用 | 并发拉分钟K时协议错乱/返回空 | 每 worker 一条独立短连接（`fetch_minute_bars_batch`） |
-| TDX 指数分钟K datetime 是脏值 | 指数 bar 的 ts 为 `2035000011207` 等乱码，图表 label 解析失败被丢弃（2026-07 起就存在，仅影响指数 K 线图；快照/信号正常） | 已修复：`_is_valid_bar_ts` 校验跳过乱码 bar，指数自动降级东财 klt=1 |
+| **指数 K 线取数用错 API**（根因） | 指数走了 `get_security_bars`，返回的 ts 是 `2035000011207` 乱码、价格也错（库里出现过 35 行负收盘价如 -73129）。表现：点看板的分组头（指数行）看 K 线，几个指数长得都一样/几乎没数据（指数只剩 12~21 根，ETF 有 3987 根） | 已修复：按 `_is_index` 分流到 `get_index_bars`。**注意**：早期只加了 `_is_valid_bar_ts` 跳过乱码 bar，那是治症状不是根因——侥幸通过校验的 bar 价格仍是错的 |
+| **期权分时 K 请求全打在已摘牌合约上**（根因） | 某日期权分时 K 一根都没入库。`_preload_option_bars` 取 `get_option_contracts(u)[:20]`，而合约表排在前面的是上一个到期月（已摘牌），新浪对摘牌合约返回空，60 次请求全打空。`select_atm_contracts` 取「最近 n 个到期月」同样会选中已摘牌月，盘中 ATM 轮换那条路也一起失效 | 已修复：`select_atm_contracts` 先剔除 `expire_date < today` 的合约（新增 `today` 参数，测试显式传值防用例随时间失效）；`_preload_option_bars` 改成「未到期 + 沪市 + 平值附近」 |
+| 新浪期权分时零成交分钟返回 p=0 | 照收会造出一根 o/h/l/c 全 0 的 bar，画到 K 线上纵轴从 0 起，期权价常在 0.001~1，真实波动被压扁（库里累积过 872 行，1 个在交易合约受影响） | `fetch_option_minute_bars` 解析时 `if price <= 0: continue` 丢弃 |
 | 打包版 QtCharts/WebEngine 缺模块 | ImportError | spec hiddenimports 已含 QtCharts/QtWebEngineWidgets/QtWebEngineCore |
 | 页面加载完成前 render 被丢弃 | 启动时 T 型页/看板空白，要等下一轮轮询才有内容 | `_BaseTab._run` 未加载完先入队，`loadFinished` 后按 JS 函数名去重补发最后一条 |
 | 策略预设跨到期月挑腿 | 牛市价差挑成「买8月+卖12月」，最大盈亏/蝶式盈利算成负数（跨月到期损益不能叠加） | `presets.pick_expiry` 锁定单一到期月（默认最近月），同行权价按成交量去重（避开 A 调整合约） |
@@ -455,11 +555,21 @@ cd /Users/huangxin/Desktop/trade_notice/pythonProject
 source .venv/bin/activate          # Python 3.12 venv 已建好，依赖已装
 
 python -m watcher                  # 开发运行
-pytest tests/ -v                   # 测试（134 用例）
+pytest tests/ -v                   # 测试（150 用例）
 PYTHONPATH=. python scripts/smoke_option_chart.py    # 冒烟：点击期权合约→图表 payload
 PYTHONPATH=. python scripts/smoke_chart_periods.py   # 冒烟：周期切换截图 /tmp/chart_*.png
-PYTHONPATH=. python scripts/smoke_tshape.py          # 冒烟：T 型页+指标分页截图 /tmp/tshape_*.png
+QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --in-process-gpu" \
+  PYTHONPATH=. python scripts/smoke_tshape.py [代码]    # 冒烟：期权 T 型（Vue 版）
 PYTHONPATH=. python scripts/smoke_underlyings.py     # 冒烟：看板/期权页标的列表
+QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --in-process-gpu" \
+  PYTHONPATH=. python scripts/smoke_quote_board.py    # 冒烟：看板分组渲染（回读真实 DOM）
+./scripts/build_frontend.sh                          # 前端构建 + qrc 编译（改 frontend/ 后必跑）
+QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --in-process-gpu" \
+  PYTHONPATH=. python scripts/smoke_vue_shell.py      # 冒烟：Vue 骨架与桥接
+QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --in-process-gpu" \
+  PYTHONPATH=. python scripts/smoke_analysis.py [代码]  # 冒烟：期权分析页 6 面板
+QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --in-process-gpu" \
+  PYTHONPATH=. python scripts/smoke_chart.py [代码]     # 冒烟：K 线图
 PYTHONPATH=. python scripts/smoke_strategy.py        # 冒烟：策略工具（预设/篮子/指标/损益图）
 python scripts/backtest_trend.py                     # 趋势策略信号层回测（§11.6 Step 0 结论：不过线）
 

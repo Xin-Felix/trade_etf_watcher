@@ -1,4 +1,4 @@
-"""下载 watchlist 全部 ETF 的 5 分钟线到缓存（走 Tushare 代理）."""
+"""下载 watchlist 全部 ETF 的 5 分钟线到缓存（Tushare 官方直连）."""
 from __future__ import annotations
 
 import pickle
@@ -63,7 +63,7 @@ def main() -> None:
     CACHE.mkdir(exist_ok=True)
     cfg = Config.load()
     client = TushareClient()
-    print(f"走代理: {client.via_proxy} | 近 {days} 天 5 分钟线")
+    print(f"数据源: {client.api_url} | 近 {days} 天 5 分钟线")
 
     out: dict[str, list[MinuteBar]] = {}
     for item in cfg.watchlist:

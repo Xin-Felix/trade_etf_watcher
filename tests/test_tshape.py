@@ -137,7 +137,8 @@ def test_select_atm_contracts():
     # 第三远月不应入选
     contracts.append(_mk("F3", 2.75, "call", "20261223"))
 
-    pool = select_atm_contracts(contracts, underlying_price=2.77)
+    # today 显式传入，否则用例会随真实日期推移而失效（20260826 早已过期）
+    pool = select_atm_contracts(contracts, underlying_price=2.77, today="20260801")
     strikes = sorted({c.strike for c in pool})
     assert strikes == [2.6, 2.65, 2.7, 2.75, 2.8, 2.85, 2.9]  # ATM=2.75 ±3 档
     # 最近 2 个到期月都包含
@@ -149,3 +150,26 @@ def test_select_atm_contracts():
     # 无合约/无价格 → 空
     assert select_atm_contracts([], 2.77) == []
     assert select_atm_contracts(contracts, 0) == []
+
+
+def test_select_atm_contracts_skips_expired():
+    """已到期的月份不能入选.
+
+    合约表会留着上一个到期月的合约。不过滤的话「最近 2 个到期月」会选中
+    已摘牌的月份，而摘牌合约的分时接口返回空 —— 整批请求打空，
+    当天期权分时 K 一根都入不了库（真实踩过）。
+    """
+    contracts = []
+    for s in (2.7, 2.75, 2.8):
+        contracts.append(_mk(f"OLD{s}", s, "call", "20260826"))   # 已摘牌
+        contracts.append(_mk(f"CUR{s}", s, "call", "20260923"))   # 当月
+        contracts.append(_mk(f"NXT{s}", s, "call", "20261028"))   # 次月
+
+    pool = select_atm_contracts(contracts, underlying_price=2.75, today="20260903")
+    got = sorted({c.expire_date for c in pool})
+    assert "20260826" not in got, f"选中了已摘牌的月份：{got}"
+    assert got == ["20260923", "20261028"], got
+
+    # 全部已到期 → 空（而不是退回摘牌合约）
+    old_only = [c for c in contracts if c.expire_date == "20260826"]
+    assert select_atm_contracts(old_only, 2.75, today="20260903") == []

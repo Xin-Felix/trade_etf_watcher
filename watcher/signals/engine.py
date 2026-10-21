@@ -37,20 +37,28 @@ class SignalEngine:
 
         return signals
 
-    def detect_technical(self, code: str, name: str, bars: list[MinuteBar]) -> list[Signal]:
+    def detect_technical(
+        self, code: str, name: str, bars: list[MinuteBar], state_key: str | None = None
+    ) -> list[Signal]:
         """信号检测（买认购/买认沽），日内可多次配对，每日开盘重置.
 
         配对逻辑：空仓→做多信号→"买认购"→持仓→做空信号→"买认沽"（平仓）→空仓→...
+
+        state_key 用于隔离买卖配对状态：同一标的在不同周期（1/5/15 分）上检测时，
+        必须各用一套状态，否则 1 分的"买"会把 5 分的配对也带成"持仓"，互相串。
+        缺省用 code 本身，保持老调用方的行为不变。
         """
         if len(bars) < 30:
             return []
+
+        skey = state_key or code
 
         # 每日重置（T+0 日内交易不隔夜）
         today = bars[-1].ts[:8] if bars[-1].ts else ""
         self._reset_tech_state_if_new_day(today)
 
         # 读取该标的当前状态
-        last_side = self._tech_state.get(code)
+        last_side = self._tech_state.get(skey)
 
         # 计算昨日高低（用于关键位突破）
         today_bars = [b for b in bars if b.ts[:8] == today]
@@ -71,10 +79,10 @@ class SignalEngine:
 
         # 配对逻辑：空仓只能买认购，持仓只能买认沽（平仓）
         if sig.key == "resonance_long" and last_side != "buy":
-            self._tech_state[code] = "buy"
+            self._tech_state[skey] = "buy"
             return [sig]
         elif sig.key == "resonance_short" and last_side == "buy":
-            self._tech_state[code] = "sell"
+            self._tech_state[skey] = "sell"
             return [sig]
 
         return []

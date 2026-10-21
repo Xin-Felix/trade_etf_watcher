@@ -72,6 +72,17 @@ def _parse_code(code: str) -> tuple[int, str]:
     return 1, code
 
 
+def _is_index(market: int, pure: str) -> bool:
+    """是不是指数。决定用哪个 pytdx API 取 K 线，以及报价要不要除 10.
+
+    分市场判断：沪市 000xxx 是指数（000300 沪深300），
+    深市 399xxx 才是指数（399006 创业板指）——深市 000xxx 是个股（000001 平安银行）。
+    """
+    if market == _MARKET_MAP["sh"]:
+        return pure.startswith("000")
+    return pure.startswith("399")
+
+
 def _tcp_latency(host: str, port: int, timeout: float = _TCP_PROBE_TIMEOUT) -> Optional[float]:
     """测量到服务器的 TCP 连接延迟（秒），失败返回 None."""
     start = time.monotonic()
@@ -198,16 +209,24 @@ class TdxFetcher(Fetcher):
         )
 
     def _call_with_timeout(self, fn, timeout: float = _READ_TIMEOUT):
-        """在子线程执行 pytdx IO 调用，超时强制返回 None（防止 recv 永久阻塞）."""
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutTimeout
-        with ThreadPoolExecutor(1) as ex:
-            fut = ex.submit(fn)
+        """在子线程执行 pytdx IO 调用，超时强制返回 None（防止 recv 永久阻塞）.
+
+        注：打包环境（PyInstaller frozen）下 ThreadPoolExecutor 可能启动慢，
+        改为先设 socket timeout 再直接调用，确保不会永久阻塞。
+        """
+        # 方案：直接给底层 socket 设超时（比 ThreadPoolExecutor 更可靠）
+        if self._api and hasattr(self._api, "client") and self._api.client:
             try:
-                return fut.result(timeout=timeout)
-            except (FutTimeout, Exception):  # noqa: BLE001
-                # 超时 = socket 僵死，标记断开让下一轮重连
-                self._api = None
-                return None
+                self._api.client.settimeout(timeout)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            result = fn()
+            return result
+        except Exception:  # noqa: BLE001
+            # socket timeout 或其他异常 = 连接僵死
+            self._api = None
+            return None
 
     def _parse_quote_item(self, item) -> Quote | None:
         try:
@@ -217,8 +236,7 @@ class TdxFetcher(Fetcher):
             code = f"{prefix}{pure}"
 
             # 指数不需要除 10；ETF/股票需要除 10
-            is_index = pure.startswith("000") or pure.startswith("399")
-            scale = 1.0 if is_index else 10.0
+            scale = 1.0 if _is_index(market, pure) else 10.0
 
             def f(key: str) -> float:
                 return float(item.get(key, 0)) / scale
@@ -274,7 +292,9 @@ class TdxFetcher(Fetcher):
                 if not api.connect(host, port, time_out=self.timeout):
                     return code, []
                 market, pure = _parse_code(code)
-                raw = api.get_security_bars(_BAR_CATEGORY["1min"], market, pure, 0, limit)
+                # 指数与个股/ETF 用不同 API，见 _fetch_bars 的说明
+                fn_name = "get_index_bars" if _is_index(market, pure) else "get_security_bars"
+                raw = getattr(api, fn_name)(_BAR_CATEGORY["1min"], market, pure, 0, limit)
                 return code, self._parse_bars(code, raw)
             except Exception:  # noqa: BLE001
                 return code, []
@@ -294,14 +314,19 @@ class TdxFetcher(Fetcher):
         if not self._ensure_api():
             return []
         market, pure = _parse_code(code)
-        raw = self._call_with_timeout(
-            lambda: self._api.get_security_bars(category, market, pure, 0, limit))
+        # 指数必须走 get_index_bars：用 get_security_bars 取指数，返回的
+        # datetime 是乱码（2004-00-55 04:01）且 close 也是错的，只有第一条对。
+        fn_name = "get_index_bars" if _is_index(market, pure) else "get_security_bars"
+
+        def call():
+            return getattr(self._api, fn_name)(category, market, pure, 0, limit)
+
+        raw = self._call_with_timeout(call)
         if raw is None:
             self._refresh_probe(force=True)
             if not self._connect():
                 return []
-            raw = self._call_with_timeout(
-                lambda: self._api.get_security_bars(category, market, pure, 0, limit))
+            raw = self._call_with_timeout(call)
         return self._parse_bars(code, raw, category)
 
     def _parse_bars(self, code: str, raw, category: int | None = None) -> list[MinuteBar]:

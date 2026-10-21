@@ -52,9 +52,6 @@ python -m watcher
 ```bash
 TUSHARE_TOKEN=xxx
 DEEPSEEK_API_KEY=sk-xxx
-# 可选：高积分代理，支持 stk_mins 等高级接口
-TUSHARE_PROXY_URL=https://example.com/
-TUSHARE_PROXY_TOKEN=xxx
 ```
 
 ## 打包

@@ -20,7 +20,7 @@ class _Bridge(QObject):
     periodRequested = QtSignal(str)
     strategyRequested = QtSignal(str)
     aiStrategyRequested = QtSignal(str)
-    viewOptionRequested = QtSignal(str)
+    viewOptionRequested = QtSignal(str, str)
     alertToggled = QtSignal(str)
 
     @Slot()
@@ -43,14 +43,36 @@ class _Bridge(QObject):
     def requestAiStrategy(self, payload_json: str) -> None:
         self.aiStrategyRequested.emit(payload_json)
 
+    # 两个重载：老 chart.html 只传标的代码，Vue 版的买卖点还会带上方向
     @Slot(str)
-    def viewOption(self, underlying_code: str) -> None:
-        self.viewOptionRequested.emit(underlying_code)
+    @Slot(str, str)
+    def viewOption(self, underlying_code: str, side: str = "") -> None:
+        """跳到期权 T 型页。
+
+        side 取 'call'/'put' 时让 T 型页只看那一侧（K 线买卖点跳过来时用：
+        买点看认购、卖点看认沽）；空字符串表示不动当前的过滤。
+        """
+        self.viewOptionRequested.emit(underlying_code, side)
 
     @Slot(str)
     def toggleAlert(self, code: str) -> None:
         """用户在行情看板切换提醒开关."""
         self.alertToggled.emit(code)
+
+    @Slot(str)
+    def copyText(self, text: str) -> None:
+        """写系统剪贴板（前端点合约代码用）.
+
+        不用 JS 的 navigator.clipboard：页面是 qrc: 源，不算安全上下文，
+        剪贴板 API 在那里不可用。走 Qt 的剪贴板最稳。
+        """
+        if not text:
+            return
+        from PySide6.QtGui import QGuiApplication
+
+        clip = QGuiApplication.clipboard()
+        if clip is not None:
+            clip.setText(text)
 
 
 class _BaseTab(QWebEngineView):
@@ -66,7 +88,11 @@ class _BaseTab(QWebEngineView):
         self._page_loaded = False
         self._pending_js: list[str] = []
         self.loadFinished.connect(self._on_load_finished)
-        self.setHtml(self._read_html(html_path), QUrl("qrc:/web/"))
+        self.setHtml(self._prepare_html(self._read_html(html_path)), QUrl("qrc:/web/"))
+
+    def _prepare_html(self, html: str) -> str:
+        """加载前改写 HTML 的钩子。默认原样返回，子类可注入运行期参数。"""
+        return html
 
     def _on_load_finished(self, ok: bool) -> None:
         self._page_loaded = bool(ok)
@@ -102,12 +128,17 @@ class _BaseTab(QWebEngineView):
             return
         self.page().runJavaScript(js)
 
+    def _call(self, fn: str, payload: dict) -> None:
+        """调用页面里的全局渲染函数（写法与 _dedupe_pending 的去重键保持一致）."""
+        js = f"window.{fn} && window.{fn}({json.dumps(payload, ensure_ascii=False)});"
+        self._run(js)
+
 
 class ChartTab(_BaseTab):
     """K 线 / 分时图表页."""
 
     period_requested = QtSignal(str)
-    view_option_requested = QtSignal(str)
+    view_option_requested = QtSignal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(":/web/chart.html", parent)
@@ -179,3 +210,79 @@ class AnalysisTab(_BaseTab):
     def render(self, payload: dict) -> None:
         js = f"window.renderAnalysis && window.renderAnalysis({json.dumps(payload, ensure_ascii=False)});"
         self._run(js)
+
+
+class VueTab(_BaseTab):
+    """Vue 前端页面（frontend/ 构建产物 app.html）.
+
+    与上面 4 个手写 HTML 的 Tab 类完全并列、互不影响：迁移期两套共存，
+    一页一页从老 Tab 换成 VueTab，任何一步都能单独回退。
+
+    所有实例加载同一份 app.html，靠 route 参数决定显示哪一页
+    （产物里的 `@@RJDJ_ROUTE@@` 标记在 setHtml 前被替换）。
+    阶段 5 收敛成单实例 + 应用内导航后，route 只用于设置初始页。
+
+    渲染入口与回调信号沿用既有契约，不新增也不改名，
+    这样 main_window.py 换 Tab 时只改构造和 connect，不动数据组装。
+    """
+
+    # 对应 _Bridge 的 7 个 Slot（老 Tab 是按需连接子集，这里全都转发出来）
+    refresh_requested = QtSignal()
+    row_clicked = QtSignal(str, str)
+    period_requested = QtSignal(str)
+    strategy_requested = QtSignal(str)
+    ai_strategy_requested = QtSignal(str)
+    view_option_requested = QtSignal(str, str)
+    alert_toggled = QtSignal(str)
+
+    #: 产物里待替换的路由标记
+    _ROUTE_MARK = "@@RJDJ_ROUTE@@"
+
+    def __init__(self, route: str = "quotes", parent=None):
+        # 必须先赋值：super().__init__ 内部就会调用 _prepare_html
+        self._route = route
+        super().__init__(":/web/app.html", parent)
+        self.bridge.refreshRequested.connect(self.refresh_requested)
+        self.bridge.rowClicked.connect(self.row_clicked)
+        self.bridge.periodRequested.connect(self.period_requested)
+        self.bridge.strategyRequested.connect(self.strategy_requested)
+        self.bridge.aiStrategyRequested.connect(self.ai_strategy_requested)
+        self.bridge.viewOptionRequested.connect(self.view_option_requested)
+        self.bridge.alertToggled.connect(self.alert_toggled)
+
+    @property
+    def route(self) -> str:
+        return self._route
+
+    def _prepare_html(self, html: str) -> str:
+        if self._ROUTE_MARK not in html:
+            raise RuntimeError(
+                f"app.html 里找不到 {self._ROUTE_MARK}，前端产物可能过期："
+                "请跑 scripts/build_frontend.sh 重新构建"
+            )
+        return html.replace(self._ROUTE_MARK, self._route)
+
+    # ---------- Python → JS 渲染入口（与老 Tab 同名同 payload） ----------
+
+    def render_quotes(self, payload: dict) -> None:
+        """行情看板（新契约：只发原始数据，视图逻辑在前端）."""
+        self._call("renderQuotes", payload)
+
+    def render_table(self, payload: dict) -> None:
+        """旧看板契约，保留给回退用（老 table.html 那套）."""
+        self._call("renderTable", payload)
+
+    def update_chart(self, payload: dict) -> None:
+        self._call("updateChart", payload)
+
+    def render_tshape(self, payload: dict) -> None:
+        self._call("renderTShape", payload)
+
+    def render_strategy(self, payload: dict) -> None:
+        self._call("renderStrategy", payload)
+
+    def render_ai_result(self, payload: dict) -> None:
+        self._call("renderAiResult", payload)
+
+    def render_analysis(self, payload: dict) -> None:
+        self._call("renderAnalysis", payload)

@@ -57,10 +57,8 @@ def load_token() -> str:
 
 
 def is_available() -> bool:
-    """有官方 token 或代理配置任一即可用."""
-    if load_token():
-        return True
-    return bool(_read_secret("TUSHARE_PROXY_URL") and _read_secret("TUSHARE_PROXY_TOKEN"))
+    """配了官方 token 即可用."""
+    return bool(load_token())
 
 
 def to_ts_option_code(option_code: str) -> str:
@@ -85,25 +83,10 @@ def to_ts_fund_code(code: str) -> str:
 class TushareClient:
     """极简 Tushare HTTP 客户端（同步、带限速、失败即空）."""
 
-    def __init__(self, token: str | None = None, timeout: float = 20.0,
-                 use_proxy: bool | None = None):
-        """use_proxy 默认自动：显式传入 token 时不走代理（尊重调用方指定）.
-
-        代理（TUSHARE_PROXY_URL/TOKEN）为高积分账号，支持分钟线等高级接口。
-        """
-        if use_proxy is None:
-            # 显式传 token（含空串，用于"无凭证"场景）时不启用代理
-            use_proxy = token is None
-        proxy_url = _read_secret("TUSHARE_PROXY_URL") if use_proxy else ""
-        proxy_token = _read_secret("TUSHARE_PROXY_TOKEN") if use_proxy else ""
-        if proxy_url and proxy_token:
-            self.api_url = proxy_url.rstrip("/")
-            self.token = proxy_token
-            self.via_proxy = True
-        else:
-            self.api_url = API_URL
-            self.token = token if token is not None else load_token()
-            self.via_proxy = False
+    def __init__(self, token: str | None = None, timeout: float = 20.0):
+        """token 为 None 时从环境变量 / secrets.env 读取；传空串表示"无凭证"场景."""
+        self.api_url = API_URL
+        self.token = token if token is not None else load_token()
         self.timeout = timeout
         self._client: httpx.Client | None = None
         self.last_error = ""

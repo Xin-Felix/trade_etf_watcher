@@ -275,6 +275,38 @@ function renderSeller() {
   html += card('Call 总持仓', d.totalCallOI != null ? fmtCompact(d.totalCallOI) : '--', 'down', '全月 Call 持仓量');
   html += card('Put 总持仓', d.totalPutOI != null ? fmtCompact(d.totalPutOI) : '--', 'up', '全月 Put 持仓量');
 
+  // 新增期权指标
+  let pcrVolCls = 'neutral', pcrVolNote = 'Put/Call 成交量比';
+  if (d.pcrVol != null) {
+    if (d.pcrVol >= 1.5) { pcrVolCls = 'up'; pcrVolNote += ' · 看空情绪浓'; }
+    else if (d.pcrVol >= 1.0) { pcrVolCls = 'warn'; pcrVolNote += ' · Put交易活跃'; }
+    else if (d.pcrVol <= 0.5) { pcrVolCls = 'down'; pcrVolNote += ' · 看多情绪浓'; }
+    else { pcrVolNote += ' · 正常'; }
+  }
+  html += card('PCR 成交量', d.pcrVol != null ? d.pcrVol.toFixed(3) : '--', pcrVolCls, pcrVolNote);
+  html += card('Call 成交量', d.totalCallVol != null ? fmtCompact(d.totalCallVol) : '--', 'down', '全月 Call 成交（张）');
+  html += card('Put 成交量', d.totalPutVol != null ? fmtCompact(d.totalPutVol) : '--', 'up', '全月 Put 成交（张）');
+
+  let skewRCls = 'neutral', skewRNote = '虚值Put IV / ATM IV';
+  if (d.ivSkewRatio != null) {
+    if (d.ivSkewRatio >= 1.5) { skewRCls = 'up'; skewRNote += ' · 尾部风险定价高（恐慌）'; }
+    else if (d.ivSkewRatio >= 1.2) { skewRCls = 'warn'; skewRNote += ' · 适度偏斜'; }
+    else { skewRCls = 'neutral'; skewRNote += ' · 正常'; }
+  }
+  html += card('IV Skew', d.ivSkewRatio != null ? d.ivSkewRatio.toFixed(2) + 'x' : '--', skewRCls, skewRNote);
+  html += card('虚值Put IV', d.otmPutIV != null ? d.otmPutIV.toFixed(2) + '%' : '--', 'neutral', '15Δ Put 隐含波动率');
+
+  html += card('时间价值比', d.timeValueRatio != null ? d.timeValueRatio.toFixed(1) + '%' : '--', 'neutral', 'ATM Call 时间价值/权利金');
+
+  html += card('净 Delta', d.netDelta != null ? fmtCompact(d.netDelta) : '--', d.netDelta > 0 ? 'up' : d.netDelta < 0 ? 'down' : 'neutral', '全月持仓 Delta 敞口（正=多头主导）');
+
+  let gexCls = 'neutral', gexNote = '做市商 Gamma 敞口方向';
+  if (d.gammaExposure != null) {
+    if (d.gammaExposure > 0) { gexCls = 'down'; gexNote += ' · 正GEX：波动收敛（利于卖方）'; }
+    else if (d.gammaExposure < 0) { gexCls = 'up'; gexNote += ' · 负GEX：波动放大（卖方危险）'; }
+  }
+  html += card('Gamma Exp', d.gammaExposure != null ? d.gammaExposure.toFixed(2) : '--', gexCls, gexNote);
+
   cards.innerHTML = html;
 }
 

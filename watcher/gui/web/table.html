@@ -10,19 +10,45 @@
   #header { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid #333; flex-wrap: wrap; }
   #title { font-size: 16px; font-weight: bold; color: #ff9800; }
   #meta { color: #888; font-size: 12px; }
+  #toggle-all { margin-left: auto; padding: 3px 10px; border: 1px solid #555; border-radius: 3px;
+                color: #bbb; font-size: 12px; cursor: pointer; user-select: none; display: none; }
+  #toggle-all:hover { border-color: #ff9800; color: #ff9800; }
   table { width: 100%; border-collapse: collapse; }
   thead th { position: sticky; top: 0; background: #2d2d2d; color: #ff9800; text-align: left;
              padding: 10px 12px; border-bottom: 2px solid #ff9800; font-weight: bold; z-index: 1; }
   tbody td { padding: 9px 12px; border-bottom: 1px solid #2c2c2c; white-space: nowrap; }
   tbody tr:nth-child(even) { background: #232323; }
+  /* 指数组头行：底色略亮 + 上方分隔线，视觉上把同组 ETF 收拢在下面 */
+  tbody tr.group { background: #2a2a2a; }
+  tbody tr.group td { font-weight: bold; border-top: 1px solid #3d3d3d; }
   tbody tr:hover { background: #333; }
   tbody tr.clickable { cursor: pointer; }
+  tbody td.indent { padding-left: 30px; }
+  .group-name { color: #ffb74d; cursor: pointer; }
+  .group-name:hover { text-decoration: underline; }
+  /* 折叠箭头：点击区域给足，别让用户瞄准 */
+  .caret { display: inline-block; width: 16px; color: #ff9800; cursor: pointer;
+           user-select: none; font-size: 10px; }
+  .grp-count { color: #777; margin-left: 6px; font-weight: normal; font-size: 12px; }
+  /* 折叠后组头上的买卖点计数，避免收起来漏掉信号 */
+  .grp-sig { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 8px;
+             background: #ff9800; color: #1e1e1e; font-size: 11px; font-weight: bold; }
   .alert-toggle { cursor: pointer; font-size: 16px; user-select: none; }
   .alert-toggle.on { opacity: 1; }
   .alert-toggle.off { opacity: 0.4; }
   .up { color: #ef5350; font-weight: bold; }
   .down { color: #26a69a; font-weight: bold; }
   .flat { color: #aaa; }
+  /* 跟踪偏离：用弱色，避免和涨跌红绿抢注意力 */
+  .dev-pos { color: #ffab91; }
+  .dev-neg { color: #a5d6c7; }
+  .dev-flat { color: #777; }
+  /* 买卖点徽标 */
+  .sig { display: inline-block; padding: 1px 7px; border-radius: 3px;
+         font-weight: bold; font-size: 12px; color: #fff; }
+  .sig-buy { background: #ef5350; }
+  .sig-sell { background: #26a69a; }
+  .sig-time { color: #999; margin-left: 6px; font-size: 12px; }
   #empty { display: flex; align-items: center; justify-content: center; height: 60vh; color: #666; font-size: 15px; }
 </style>
 </head>
@@ -30,6 +56,7 @@
 <div id="header">
   <span id="title"></span>
   <span id="meta"></span>
+  <span id="toggle-all"></span>
 </div>
 <div id="empty" style="display:none">暂无数据</div>
 <table id="tbl" style="display:none">
@@ -43,12 +70,58 @@ new QWebChannel(qt.webChannelTransport, function(channel) {
 let columns = [];
 let rowKey = null;
 
+// 折叠状态必须活在 draw() 之外：看板每轮轮询都会全量重绘，
+// 状态存 DOM 里会被每次重建冲掉。
+const collapsed = new Set();
+let lastPayload = null;
+let collapseInit = false;
+
+window.toggleGroup = function(group) {
+  if (!group) return;
+  if (collapsed.has(group)) collapsed.delete(group);
+  else collapsed.add(group);
+  if (lastPayload) draw(lastPayload);
+};
+
+window.toggleAll = function() {
+  const groups = (lastPayload && lastPayload.rows || [])
+    .filter(r => r._isGroup && r._group).map(r => r._group);
+  if (collapsed.size) collapsed.clear();          // 有收起的 → 全部展开
+  else groups.forEach(g => collapsed.add(g));     // 全展开状态 → 全部收起
+  if (lastPayload) draw(lastPayload);
+};
+
 window.renderTable = function(payload) {
+  lastPayload = payload;
+  // 首次拿到数据时默认全部收起（展开全部太花，用户按需点开）
+  if (!collapseInit) {
+    (payload.rows || []).forEach(r => {
+      if (r._isGroup && r._group) collapsed.add(r._group);
+    });
+    collapseInit = true;
+  }
+  draw(payload);
+};
+
+function draw(payload) {
   document.getElementById('title').textContent = payload.title || '';
   document.getElementById('meta').textContent = payload.meta || '';
   columns = payload.columns || [];
   rowKey = payload.rowKey || null;
-  const rows = payload.rows || [];
+  const allRows = payload.rows || [];
+  // 折叠组的成员行直接不渲染
+  const rows = allRows.filter(r => r._isGroup || !r._group || !collapsed.has(r._group));
+
+  // 全部展开/收起按钮（只在有分组时出现）
+  const btn = document.getElementById('toggle-all');
+  const groupCount = allRows.filter(r => r._isGroup && r._group).length;
+  if (groupCount) {
+    btn.style.display = 'inline-block';
+    btn.textContent = collapsed.size ? '全部展开' : '全部收起';
+    btn.onclick = window.toggleAll;
+  } else {
+    btn.style.display = 'none';
+  }
 
   const tbl = document.getElementById('tbl');
   const empty = document.getElementById('empty');
@@ -61,19 +134,35 @@ window.renderTable = function(payload) {
 
   const body = document.getElementById('body');
   body.innerHTML = '';
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const isEmpty = (v) => v == null || v === '';
+
   rows.forEach(r => {
     const tr = document.createElement('tr');
-    if (rowKey) {
-      tr.className = 'clickable';
+    const isGroup = !!r._isGroup;
+    const isCol = isGroup && collapsed.has(r._group);
+    if (isGroup) tr.classList.add('group');
+    // 组头占位行（如"其他"）没有 code，不可点击
+    if (rowKey && r[rowKey]) {
+      tr.classList.add('clickable');
       tr.onclick = (e) => {
-        if (e.target.classList.contains('alert-toggle')) return;  // toggle 不触发行点击
+        const t = e.target.classList;
+        // 提醒开关和折叠箭头/组名各管各的，不触发跳 K 线
+        if (t.contains('alert-toggle') || t.contains('caret') || t.contains('group-name')) return;
         if (window.pyBridge) window.pyBridge.onRowClicked(r[rowKey], r._name || r[rowKey]);
       };
     }
     tr.innerHTML = columns.map(c => {
       let v = r[c.key];
       let cls = '';
+      // 行级 _digits 优先（指数 4 位数用 2 位小数，ETF 用 3 位）
+      const digits = r._digits != null ? r._digits
+                   : (c.digits != null ? c.digits : 3);
+
       if (c.type === 'toggle') {
+        if (v == null) return '<td></td>';        // 指数行没有提醒开关
         const on = !!v;
         const code = r[rowKey] || '';
         return `<td><span class="alert-toggle ${on ? 'on' : 'off'}" `+
@@ -81,14 +170,46 @@ window.renderTable = function(payload) {
                `this.classList.toggle('on');this.classList.toggle('off');` +
                `this.textContent=this.classList.contains('on')?'🔔':'🔕'}" `+
                `title="${on ? '点击关闭提醒' : '点击开启提醒'}">${on ? '🔔' : '🔕'}</span></td>`;
-      } else if (c.type === 'pct') {
+      }
+      if (c.type === 'signal') {
+        // 组头的 signal 是组内汇总：只在收起时显示，展开时留空避免和成员行重复
+        if (isGroup && !isCol) return '<td></td>';
+        if (!v || !v.side) return '<td class="flat">-</td>';
+        const sc = v.side === 'buy' ? 'sig-buy' : 'sig-sell';
+        const st = v.side === 'buy' ? '买' : '卖';
+        return `<td><span class="sig ${sc}" title="${esc(v.label)}">${st}</span>` +
+               `<span class="sig-time">${esc(v.time)}</span></td>`;
+      }
+      if (c.type === 'pct') {
+        if (isEmpty(v)) return '<td class="flat">-</td>';
         const n = Number(v);
         cls = n > 0 ? 'up' : n < 0 ? 'down' : 'flat';
-        v = (n > 0 ? '+' : '') + (isNaN(n) ? '-' : n.toFixed(2)) + '%';
+        v = (n > 0 ? '+' : '') + n.toFixed(2) + '%';
+      } else if (c.type === 'chg') {
+        if (isEmpty(v)) return '<td class="flat">-</td>';
+        const n = Number(v);
+        cls = n > 0 ? 'up' : n < 0 ? 'down' : 'flat';
+        v = (n > 0 ? '+' : '') + n.toFixed(digits);
+      } else if (c.type === 'dev') {
+        if (isEmpty(v)) return '<td class="dev-flat">-</td>';
+        const n = Number(v);
+        cls = n > 0 ? 'dev-pos' : n < 0 ? 'dev-neg' : 'dev-flat';
+        v = (n > 0 ? '+' : '') + n.toFixed(2) + 'pp';
       } else if (c.type === 'num') {
-        v = (v == null || v === '') ? '-' : Number(v).toFixed(c.digits != null ? c.digits : 3);
-      } else if (v == null || v === '') {
+        v = isEmpty(v) ? '-' : Number(v).toFixed(digits);
+      } else if (c.key === 'name') {
+        // 名称列：组头是折叠开关（箭头 + 名称 + 成员数 + 买卖点计数），ETF 缩进一级
+        if (!isGroup) return `<td class="indent">${esc(v)}</td>`;
+        const tg = `event.stopPropagation();window.toggleGroup('${r._group}')`;
+        const badge = r._sigCount
+          ? `<span class="grp-sig" title="组内 ${r._sigCount} 个买卖点">${r._sigCount}</span>` : '';
+        return `<td><span class="caret" onclick="${tg}" title="展开/收起">${isCol ? '▶' : '▼'}</span>` +
+               `<span class="group-name" onclick="${tg}">${esc(v)}</span>` +
+               `<span class="grp-count">(${r._count || 0})</span>${badge}</td>`;
+      } else if (isEmpty(v)) {
         v = '-';
+      } else {
+        v = esc(v);
       }
       return `<td class="${cls}">${v}</td>`;
     }).join('');

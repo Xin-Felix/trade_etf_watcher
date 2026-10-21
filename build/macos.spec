@@ -16,6 +16,8 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(CONFIG), "."),
+        # akshare 的 file_fold 数据文件（期权合约加载必须）
+        (str(ROOT / ".venv/lib/python3.12/site-packages/akshare/file_fold"), "akshare/file_fold"),
     ],
     hiddenimports=[
         "pytdx.hq",
@@ -27,10 +29,21 @@ a = Analysis(
         "PySide6.QtWebEngineWidgets",
         "PySide6.QtWebEngineCore",
         "PySide6.QtWebChannel",
+        # 网络层（打包后拉数据必须完整）
         "httpx",
         "httpx._transports",
         "httpx._transports.default",
         "httpcore",
+        "httpcore._async",
+        "httpcore._sync",
+        "anyio",
+        "anyio._backends",
+        "anyio._backends._asyncio",
+        "sniffio",
+        "h11",
+        "certifi",
+        "ssl",
+        "socksio",
         "pytz",
         # macOS 原生通知（横幅弹出 + 点击跳转），delegate 靠运行时反射，
         # PyInstaller 静态分析扫不到，必须显式声明
@@ -44,7 +57,17 @@ a = Analysis(
         "watcher.ai.client",
         "watcher.ai.strategy_prompt",
         "watcher.strategy",
+        "watcher.strategy.pricing",
+        "watcher.strategy.payoff",
+        "watcher.strategy.decay",
+        "watcher.strategy.presets",
         "watcher.fetchers.tushare_src",
+        # akshare 及其依赖（期权合约元数据加载）
+        "akshare",
+        "pandas",
+        "numpy",
+        "lxml",
+        "lxml.etree",
     ],
     hookspath=[],
     hooksconfig={},
@@ -73,7 +96,7 @@ exe = EXE(
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
-    entitlements_file=None,
+    entitlements_file=str(ROOT / "build" / "entitlements.plist"),
 )
 
 coll = COLLECT(
@@ -95,8 +118,12 @@ app = BUNDLE(
     info_plist={
         "CFBundleDisplayName": "日进斗金",
         "CFBundleName": "日进斗金",
-        "CFBundleShortVersionString": "0.8.0",
+        "CFBundleShortVersionString": "0.9.0",
         "NSRequiresAquaSystemAppearance": False,
         "NSHighResolutionCapable": True,
+        # 网络权限声明（打包后拉数据必须）
+        "NSAppTransportSecurity": {
+            "NSAllowsArbitraryLoads": True,  # 允许 HTTP（TDX/新浪是 HTTP）
+        },
     },
 )

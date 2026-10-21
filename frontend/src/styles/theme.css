@@ -1,0 +1,101 @@
+/**
+ * 统一主题变量。
+ * 取值来自现有 4 个页面（chart/table/tshape/analysis.html）里各自重复定义的深色配色，
+ * 集中到这里，后续逐页迁移时不再各写一份。
+ */
+:root {
+  /* 背景层次：页面 → 面板/表头 → 悬停 */
+  --bg: #1e1e1e;
+  --bg-panel: #2d2d2d;
+  --bg-row-alt: #232323;
+  --bg-group: #2a2a2a;
+  --bg-hover: #333;
+
+  /* 边框 */
+  --line: #333;
+  --line-soft: #2c2c2c;
+  --line-strong: #555;
+
+  /* 文字 */
+  --fg: #e0e0e0;
+  --fg-dim: #aaa;
+  --fg-weak: #888;
+  --fg-faint: #777;
+  --fg-strong: #fff;
+
+  /* 主色（橙） */
+  --accent: #ff9800;
+  --accent-soft: #ffb74d;
+
+  /* 涨跌语义色：A 股习惯，涨红跌绿 */
+  --up: #ef5350;
+  --down: #26a69a;
+  --flat: #aaa;
+  /* 弱化版：用于跟踪偏离一类的次要数值，不与涨跌抢注意力 */
+  --up-weak: #ffab91;
+  --down-weak: #a5d6c7;
+
+  /* 辅助色 */
+  --info: #4fc3f7;
+  --info-2: #42a5f5;
+  --warn: #ffd700;
+  --purple: #9c27b0;
+
+  --font: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --fs: 13px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: var(--fs);
+  /* 桌面端内嵌页面：禁掉整页选中和原生滚动回弹，更像原生控件 */
+  overscroll-behavior: none;
+}
+
+/* 涨跌语义类，全局复用 */
+.up {
+  color: var(--up);
+  font-weight: bold;
+}
+
+.down {
+  color: var(--down);
+  font-weight: bold;
+}
+
+.flat {
+  color: var(--flat);
+}
+
+/* 滚动条：跟深色主题对齐 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3a3a3a;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4a4a4a;
+}

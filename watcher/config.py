@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +16,34 @@ class WatchItem(BaseModel):
     code: str
     name: str
     thresholds: dict[str, float] = Field(default_factory=dict)
+
+
+# 跟踪指数与 ETF→指数映射的内置默认值。
+# 这是产品知识（哪只 ETF 跟哪个指数）而不是用户偏好，所以内置：
+# 老版本 config.yaml 没有这两段时，看板分组依然可用。
+# config.yaml 里显式配置会整体覆盖。
+DEFAULT_INDICES: list[dict[str, str]] = [
+    {"code": "sh000016", "name": "上证50"},
+    {"code": "sh000300", "name": "沪深300"},
+    {"code": "sh000905", "name": "中证500"},
+    {"code": "sh000688", "name": "科创50"},
+    {"code": "sz399006", "name": "创业板指"},
+    {"code": "sz399330", "name": "深证100"},
+]
+
+DEFAULT_INDEX_MAP: dict[str, str] = {
+    "sh510050": "sh000016",
+    "sh510300": "sh000300",
+    "sz159919": "sh000300",
+    "sh510500": "sh000905",
+    "sz159922": "sh000905",
+    "sh588000": "sh000688",
+    "sh588080": "sh000688",
+    "sh588050": "sh000688",
+    "sz159915": "sz399006",
+    "sz159952": "sz399006",
+    "sz159901": "sz399330",
+}
 
 
 class Thresholds(BaseModel):
@@ -102,6 +132,12 @@ class AppConfig(BaseModel):
 class Config(BaseModel):
     app: AppConfig = Field(default_factory=AppConfig)
     watchlist: list[WatchItem] = Field(default_factory=list)
+    # 跟踪指数（只拉快照做对比，不做信号检测）
+    indices: list[WatchItem] = Field(
+        default_factory=lambda: [WatchItem(**d) for d in DEFAULT_INDICES])
+    # ETF code -> 指数 code
+    index_map: dict[str, str] = Field(
+        default_factory=lambda: dict(DEFAULT_INDEX_MAP))
     thresholds: Thresholds = Field(default_factory=Thresholds)
     data_sources: list[str] = Field(default_factory=lambda: ["tdx", "tencent", "eastmoney"])
     tdx_servers: list[TdxServer] = Field(default_factory=list)
@@ -132,12 +168,48 @@ class Config(BaseModel):
         path.write_text(yaml.safe_dump(self.model_dump(), allow_unicode=True, sort_keys=False), encoding="utf-8")
 
     @staticmethod
+    def bundled_config_path() -> Optional[Path]:
+        """PyInstaller 打包目录内的 config.yaml（只读模板）.
+
+        非打包环境返回 None。
+        """
+        base = getattr(sys, "_MEIPASS", None)
+        if not base:
+            return None
+        candidate = Path(base) / "config.yaml"
+        return candidate if candidate.exists() else None
+
+    @staticmethod
+    def user_config_path() -> Path:
+        return Path(user_config_dir("ETFWatcher", appauthor=False)) / "config.yaml"
+
+    @staticmethod
     def default_config_path() -> Path:
-        cwd = Path(os.getcwd())
-        local = cwd / "config.yaml"
+        """解析实际使用的配置文件路径.
+
+        打包环境（.app 双击启动时 cwd 是 `/`，不能依赖 cwd）：
+          用户配置目录优先；不存在则把包内模板 seed 过去，用户后续可直接编辑。
+        开发环境：
+          保持项目目录 ./config.yaml 优先，行为不变。
+        """
+        user_path = Config.user_config_path()
+
+        if getattr(sys, "frozen", False):
+            if not user_path.exists():
+                bundled = Config.bundled_config_path()
+                if bundled is not None:
+                    try:
+                        user_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(bundled, user_path)
+                    except OSError:
+                        # 用户目录不可写时直接读包内模板兜底
+                        return bundled
+            return user_path
+
+        local = Path(os.getcwd()) / "config.yaml"
         if local.exists():
             return local
-        return Path(user_config_dir("ETFWatcher", appauthor=False)) / "config.yaml"
+        return user_path
 
     @staticmethod
     def data_dir() -> Path:
@@ -156,4 +228,35 @@ class Config(BaseModel):
         for item in self.watchlist:
             if item.code == code:
                 return item.name
+        for item in self.indices:
+            if item.code == code:
+                return item.name
         return code
+
+    # ---------- 跟踪指数 ----------
+
+    def index_codes(self) -> list[str]:
+        """所有跟踪指数代码（按 indices 配置顺序）."""
+        return [item.code for item in self.indices]
+
+    def all_quote_codes(self) -> list[str]:
+        """需要拉快照的全部代码 = watchlist + 指数（去重，保持顺序）."""
+        out: list[str] = []
+        seen: set[str] = set()
+        for code in self.watch_codes() + self.index_codes():
+            if code not in seen:
+                seen.add(code)
+                out.append(code)
+        return out
+
+    def is_index(self, code: str) -> bool:
+        return code in {item.code for item in self.indices}
+
+    def index_for(self, etf_code: str) -> str:
+        """某 ETF 跟踪的指数代码；未配置返回空串."""
+        return self.index_map.get(etf_code, "")
+
+    def etfs_for_index(self, index_code: str) -> list[str]:
+        """跟踪该指数的 ETF 代码列表（按 watchlist 顺序）."""
+        return [item.code for item in self.watchlist
+                if self.index_map.get(item.code) == index_code]

@@ -201,61 +201,100 @@ class WatcherLoop(QThread):
             time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
 
     def _preload_option_bars(self) -> None:
-        """启动时预加载沪市 ETF 期权的分钟 K 线，用于图表展示."""
-        from watcher.option_meta import fetch_option_minute_bars
+        """启动时预加载沪市 ETF 期权的分钟 K 线，用于图表展示.
+
+        必须挑「还没到期 + 贴近平值」的合约。直接取合约表前 20 个的话，
+        排在前面的是上一个到期月（已摘牌），新浪对它们一律返回空，
+        60 次请求会全部打空 —— 表现就是当天期权分时 K 一根都没入库。
+        """
+        from watcher.option_meta import fetch_option_minute_bars, select_atm_contracts
 
         date = today_str()
-        # 只加载沪市标的（新浪接口支持），每次最多取前 20 个合约避免过慢
+        day = date.replace("-", "")
         for underlying in self._option_underlyings[:3]:
-            contracts = self.store.get_option_contracts(underlying)[:20]
-            for c in contracts:
-                if not c.option_code.startswith("10"):
-                    continue
+            # 只加载沪市标的（新浪接口只支持沪市 10xxxxxx）
+            alive = [c for c in self.store.get_option_contracts(underlying)
+                     if (c.expire_date or "") >= day and c.option_code.startswith("10")]
+            if not alive:
+                continue
+            uq = self.store.latest_quotes().get(underlying)
+            # 有现价就挑平值附近的（那才是真会去看的），否则退回未到期的头几个
+            picks = (select_atm_contracts(alive, uq.price, today=day)
+                     if uq and uq.price > 0 else alive)
+            for c in (picks or alive)[:20]:
                 for bar in fetch_option_minute_bars(c.option_code):
                     self.store.save_bar(bar, date)
 
     def _refresh_minute_bars(self) -> None:
-        """并发批量拉取全部 watchlist 标的的分钟 K 并保存."""
-        codes = self.cfg.watch_codes()
+        """并发批量拉取全部标的（含跟踪指数）的分钟 K 并保存.
+
+        带上指数是为了看板点击指数行也能看 K 线；指数不参与信号检测。
+        """
+        codes = self.cfg.all_quote_codes()
         batch = self._fetchers.fetch_minute_bars_batch(codes, limit=120)
         for bars in batch.values():
             if bars:
                 self.store.save_bars(bars, today_str())
 
+    #: 看板要对照的三个检测周期（分钟）。5 分是主档，也是唯一触发提醒的那档。
+    _TECH_PERIODS = (1, 5, 15)
+    _ALERT_PERIOD = 5
+
     def _detect_technical_signals(self) -> None:
-        """基于本地 5 分钟 K 线检测技术指标信号（RSI/布林带/KDJ/放量突破）."""
+        """基于本地分钟 K 检测量价形态买卖点，按 1/5/15 分三个周期分别算.
+
+        为什么三档：同一时刻不同周期结论可能不同（1 分噪音多、更易触发），
+        用户在 K 线图上看某个周期有买点，看板要能按周期对照，不然「图上有、
+        列表没有」会让人以为漏了。三档的 key 带周期标签（resonance_long_5m_1024），
+        看板按周期分列展示。
+
+        提醒只发 5 分那档（_ALERT_PERIOD）：1 分太吵、15 分太钝，5 分是买方
+        日内常用周期，也是 patterns.py 阈值当初调校的基准。
+
+        跟踪指数三档都检测但**都不进提醒**（不可交易，弹窗只会是噪音），
+        只入库供看板和今日信号对照。K 线图上的标记是实时算的，不依赖这里。
+        """
         from watcher.bars import aggregate_minute_bars
 
         date = today_str()
         new_signals: list[Signal] = []
-        for item in self.cfg.watchlist:
-            # 用 5 分钟级别检测（过滤噪音，买方日内常用周期）
-            bars1 = self.store.get_bars(item.code, limit=200)
+        # 取够 15 分档用：15 分聚合要 ≥25 根才过门槛，即 ≥375 根 1 分。
+        # 取 600 根（含前一交易日尾段）留足余量；1 分/5 分本就够。
+        for item in list(self.cfg.watchlist) + list(self.cfg.indices):
+            bars1 = self.store.get_bars(item.code, limit=600)
             if len(bars1) < 30:
                 continue
-            bars5 = aggregate_minute_bars(bars1, 5)
-            if len(bars5) < 25:
-                continue
-            signals = self.engine.detect_technical(item.code, item.name, bars5)
-            for sig in signals:
-                # 技术指标信号需要一天内多次触发（买卖配对），key 加时间戳避免去重
-                unique_sig = Signal(
-                    key=f"{sig.key}_{sig.ts[8:12] if len(sig.ts) >= 12 else ''}",
-                    code=sig.code,
-                    name=sig.name,
-                    label=sig.label,
-                    detail=sig.detail,
-                    level=sig.level,
-                    ts=sig.ts,
-                )
-                if self.store.save_signal(unique_sig, date):
-                    new_signals.append(unique_sig)
+            for minutes in self._TECH_PERIODS:
+                bars = bars1 if minutes == 1 else aggregate_minute_bars(bars1, minutes)
+                if len(bars) < 25:
+                    continue
+                # state_key 带周期，三档买卖配对状态互不干扰
+                skey = f"{item.code}@{minutes}m"
+                signals = self.engine.detect_technical(
+                    item.code, item.name, bars, state_key=skey)
+                for sig in signals:
+                    # key 带周期 + 时间：同一天同周期可多次买卖配对，靠时间避免去重
+                    tag = sig.ts[8:12] if len(sig.ts) >= 12 else ""
+                    unique_sig = Signal(
+                        key=f"{sig.key}_{minutes}m_{tag}",
+                        code=sig.code,
+                        name=sig.name,
+                        label=sig.label,
+                        detail=sig.detail,
+                        level=sig.level,
+                        ts=sig.ts,
+                    )
+                    if self.store.save_signal(unique_sig, date):
+                        # 只有 5 分档、且非指数才弹提醒
+                        if minutes == self._ALERT_PERIOD and not self.cfg.is_index(item.code):
+                            new_signals.append(unique_sig)
         if new_signals:
             self.signals.signals_fired.emit(new_signals)
 
     def _poll(self, detect_signals: bool = True) -> None:
         self._load_option_contracts()
-        codes = self.cfg.watch_codes()
+        # 含跟踪指数：看板要拿指数行情做对比（指数不做信号检测，见下）
+        codes = self.cfg.all_quote_codes()
         result = self._fetchers.fetch(codes)
 
         if not result:
@@ -286,7 +325,8 @@ class WatcherLoop(QThread):
                 quote.name = self.cfg.name_for(code)
 
             self.store.save_quote(quote, date)
-            if detect_signals:
+            # 指数不可交易，不产生信号
+            if detect_signals and not self.cfg.is_index(code):
                 # 从已保存的分钟 K 线中取最新一根用于信号检测
                 bars = self.store.get_bars(code, limit=1)
                 latest_bar = bars[0] if bars else None
@@ -409,6 +449,7 @@ class WatcherLoop(QThread):
         uq = self.store.latest_quotes().get(underlying)
         if not uq or uq.price <= 0:
             return
+        # select_atm_contracts 内部会剔掉已到期合约（否则会挑中已摘牌的月份）
         pool = select_atm_contracts(self.store.get_option_contracts(underlying), uq.price)
         if not pool:
             return

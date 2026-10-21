@@ -6,6 +6,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/work/
+build/macos/
 *.egg
 
 # Virtual Environment
@@ -52,6 +53,11 @@ scripts/.cache/
 
 # Compiled Qt resources (auto-generated, can be rebuilt)
 # watcher/gui/web/web_resources.py  # 保留：打包需要，pyside6-rcc 生成
+
+# 前端（Vue）
+frontend/node_modules/
+# 构建产物：由 scripts/build_frontend.sh 生成，不进 git
+watcher/gui/web/app.html
 
 # Distribution
 dist/
